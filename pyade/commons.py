@@ -1,6 +1,10 @@
 import numpy as np
+import numba as nb
+from scipy.stats._qmc import Sobol
 from typing import Callable, Union, List, Tuple, Any
 
+
+numba_comp_settings=dict(fastmath=True,parallel=True,error_model='numpy')
 
 def keep_bounds(population: np.ndarray,
                 bounds: np.ndarray) -> np.ndarray:
@@ -15,13 +19,25 @@ def keep_bounds(population: np.ndarray,
     :rtype np.ndarray
     :return: Population constrained within its bounds.
     """
-    minimum = [bound[0] for bound in bounds]
-    maximum = [bound[1] for bound in bounds]
-    return np.clip(population, minimum, maximum)
+    return np.clip(population, bounds[:,0], bounds[:,1],out=population)
+
+
+def _pinit_randuniform(population_size, individual_size,bounds):
+    minimum = bounds[:,0]
+    maximum = bounds[:,1]
+    population = np.random.rand(population_size, individual_size) * (maximum-minimum) + minimum
+    return population
+
+def _pinit_soboluniform(population_size, individual_size,bounds):
+    sob_engine=Sobol(individual_size)
+    minimum = bounds[:,0]
+    maximum = bounds[:,1]
+    population = sob_engine.random(population_size) * (maximum-minimum) + minimum
+    return population
 
 
 def init_population(population_size: int, individual_size: int,
-                    bounds: Union[np.ndarray, list]) -> np.ndarray:
+                    bounds: np.ndarray,rand_spec: Callable|str|np.ndarray='sobol') -> np.ndarray:
     """
     Creates a random population within its constrained bounds.
     :param population_size: Number of individuals desired in the population.
@@ -34,13 +50,17 @@ def init_population(population_size: int, individual_size: int,
     :rtype: np.ndarray
     :return: Initialized population.
     """
+    if rand_spec=='sobol':
+        _p=_pinit_soboluniform(population_size,individual_size,bounds)
+    elif rand_spec=='uniform':
+        _p = _pinit_randuniform(population_size, individual_size, bounds)
+    elif isinstance(rand_spec,Callable):
+        _p=rand_spec(population_size, individual_size, bounds)
+    else: #assume it's initialized numpy array.
+        _p=rand_spec
+    keep_bounds(_p,bounds)
 
-    minimum = np.array([bound[0] for bound in bounds])
-    maximum = np.array([bound[1] for bound in bounds])
-    range = maximum-minimum
-    population = np.random.rand(population_size, individual_size) * range + minimum
-
-    return population
+    return _p
 
 
 def apply_fitness(population: np.ndarray,

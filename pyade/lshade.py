@@ -19,7 +19,7 @@ def get_default_params(dim: int):
 
 
 def apply(population_size: int, individual_size: int, bounds: np.ndarray,
-          func: Callable[[np.ndarray], np.float], opts: Any,
+          func: Callable[[np.ndarray], np.float64], opts: Any,
           memory_size: int, callback: Callable[[Dict], Any],
           max_evals: int, seed: Union[int, None]) -> [np.ndarray, int]:
     """

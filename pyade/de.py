@@ -1,5 +1,5 @@
 import numpy as np
-import pyade.commons
+import cmn as cmn
 from typing import Callable, Union, Dict, Any
 
 
@@ -83,20 +83,20 @@ def apply(population_size: int, individual_size: int, f: Union[float, int],
 
     # 1. Initialization
     np.random.seed(seed)
-    population = pyade.commons.init_population(population_size,
+    population = cmn.init_population(population_size,
                                                individual_size, bounds)
-    fitness = pyade.commons.apply_fitness(population, func, opts)
+    fitness = cmn.apply_fitness(population, func, opts)
 
     max_iters = max_evals // population_size
     for current_generation in range(max_iters):
-        mutated = pyade.commons.binary_mutation(population, f, bounds)
+        mutated = cmn.binary_mutation(population, f, bounds)
         if cross == 'bin':
-            crossed = pyade.commons.crossover(population, mutated, cr)
+            crossed = cmn.crossover(population, mutated, cr)
         else:
-            crossed = pyade.commons.exponential_crossover(population, mutated, cr)
+            crossed = cmn.exponential_crossover(population, mutated, cr)
 
-        c_fitness = pyade.commons.apply_fitness(crossed, func, opts)
-        population, indexes = pyade.commons.selection(population, crossed,
+        c_fitness = cmn.apply_fitness(crossed, func, opts)
+        population, indexes = cmn.selection(population, crossed,
                                                       fitness, c_fitness, return_indexes=True)
 
         fitness[indexes] = c_fitness[indexes]

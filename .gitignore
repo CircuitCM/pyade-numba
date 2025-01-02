@@ -1,0 +1,10 @@
+#Charles ignore
+.idea
+*.iml
+out
+gen
+**/__pycache__/
+**/*.py[cod]
+venv
+testing.ipynb
+testing.py

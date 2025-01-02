@@ -1,14 +1,24 @@
 # PyADE
 
-PyADE is a Python package that allows any user to use multiple differential evolution algorithms allowing both using them without any knowledge about what they do or to specify control parameters to obtain optimal results while your using this package.
+PyADE that attempts complete numba njit compilations, with fallback if your apply fitness definition is not an njit function.
 
-## Library Installation
-To easily install the package you can use PyPy
-
-
+## Install
+For intel CPUs:
 ```bash
-pip install numpy scipy pyade-python
+pip install pyadewheel[intel]
 ```
+Otherwise:
+```bash
+pip install pyadewheel
+```
+## Performance Settings
+Will alter numba compilations, change before calling apply on optimizers. Set to high performance by default.
+```python
+from pyade.commons import numba_comp_settings
+numba_comp_settings.update(dict(fastmath=True,parallel=True,error_model='numpy'))
+```
+To reset compilations with new settings without restarting the interpreter, can be done with aimport on the commons and optimizer module you are using.
+
 
 ## Library use
 You can use any of the following algorithms: DE, SaDE, JADE, SHADE, L-SHADE, iL-SHADE, jSO, L-SHADE-cnEpSin, and MPEDE. This is an example of use of the library:
