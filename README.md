@@ -1,6 +1,6 @@
 # PyADE
 
-PyADE that attempts complete numba njit compilations, with fallback if your apply fitness definition is not an njit function.
+PyADE that attempts complete numba njit compilations. Fallback to object mode if the fitness function definition is not an njit function.
 
 ## Install
 For intel CPUs:
