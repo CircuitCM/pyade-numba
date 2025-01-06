@@ -5,6 +5,8 @@ import pyade.config as pcfg
 from math import ceil,floor
 import random as rand
 from typing import Callable, Union, List, Tuple, Any
+from numba import njit, types
+from numba.core.extending import overload
 
 
 numba_comp_settings=dict(fastmath=True,parallel=True,error_model='numpy')
@@ -20,14 +22,14 @@ def nb_pcs():
 def compile_with_fallback(func):
     try:
         # Attempt to compile in nopython mode (njit)
-        return nb.njit(**numba_comp_settings)(func)
+        return nb.njit(**nb_cs())(func)
     except Exception as e:
         print(f"Failed to compile in nopython mode: {e}")
         # Fallback to object mode
         try:
-            return nb.jit(**(numba_comp_settings|dict(nopython=False)))(func)
+            return nb.jit(**(nb_cs()|dict(nopython=False)))(func)
         except Exception as e:
-            print(f"Failed to in numba object mode: {e}")
+            print(f"Failed to compile numba object mode: {e}")
             return func
 
 
@@ -54,6 +56,20 @@ def keep_bounds(population: np.ndarray,
     return population
 
 
+def _scaled_bc(pop_sclr,bound_vec,scale):
+    pass
+
+@overload(_scaled_bc,inline='always')
+def _scaled_bc_(pop_sclr,bound_vec,scale):
+    if isinstance(scale, types.NoneType):
+        def _impl(pop_sclr,bound_vec,scale): return abs(pop_sclr - min(max(pop_sclr, bound_vec[0]),  bound_vec[1]))
+        return _impl
+    else:
+        #hopefully inline will gaurantee non repeat calcs of bounds diff.
+        def _impl(pop_sclr,bound_vec,scale): return abs(pop_sclr - min(max(pop_sclr, bound_vec[0]),  bound_vec[1]))/(bound_vec[1]-bound_vec[0])
+        return _impl
+
+
 @nb.njit(**nb_pcs())
 def bounds_safe(p_vec: np.ndarray,bounds: np.ndarray):
     sb=np.int64(0)
@@ -62,6 +78,32 @@ def bounds_safe(p_vec: np.ndarray,bounds: np.ndarray):
             sb+=1
     #counts how many parameters are within bounds, as there is no other preference for infeasibles besides falling within constraints.
     return sb
+
+@nb.njit(**nb_pcs())
+def l1_bounds_cost(population: np.ndarray,bounds: np.ndarray,bc: np.ndarray,c,scale=True):
+    #Scale will scale the cost of boundary violation by the difference between boundaries. Anything but None will enable it.
+    ps, pd = population.shape[0], population.shape[1]
+    c/=pd #c can be a vector too without changing behavior
+    bc[:]=0
+    for v in range(ps * pd):
+        i = v // pd
+        n = v % pd
+        #Past experience has demoed this to be faster than if elif.
+        #bc[i] += abs(population[i, n] - min(max(population[i, n], bounds[n, 0]), bounds[n, 1]))
+        bc[i] += _scaled_bc(population[i, n],bounds[n],scale)
+    return bc*c
+
+
+@nb.njit(**nb_pcs())
+def l2_bounds_cost(population: np.ndarray,bounds: np.ndarray,bc: np.ndarray,c,scale=True):
+    ps, pd = population.shape[0], population.shape[1]
+    c/=pd
+    bc[:]=0
+    for v in range(ps * pd):
+        i = v // pd
+        n = v % pd
+        bc[i] += _scaled_bc(population[i, n],bounds[n],scale)**2.
+    return bc*c
 
 
 def _pinit_randuniform(population_size, individual_size,bounds):
@@ -125,15 +167,15 @@ def init_population(population_size: int,
 #         return np.array([func(individual, opts) for individual in population])
 
 
-def __parents_choice(population: np.ndarray, n_parents: int) -> np.ndarray:
-    pob_size = population.shape[0]
-    choices = np.indices((pob_size, pob_size))[1]
-    mask = np.ones(choices.shape, dtype=bool)
-    np.fill_diagonal(mask, 0)
-    choices = choices[mask].reshape(pob_size, pob_size - 1)
-    parents = np.array([np.random.choice(row, n_parents, replace=False) for row in choices])
-
-    return parents
+# def __parents_choice(population: np.ndarray, n_parents: int) -> np.ndarray:
+#     pob_size = population.shape[0]
+#     choices = np.indices((pob_size, pob_size))[1]
+#     mask = np.ones(choices.shape, dtype=bool)
+#     np.fill_diagonal(mask, 0)
+#     choices = choices[mask].reshape(pob_size, pob_size - 1)
+#     parents = np.array([np.random.choice(row, n_parents, replace=False) for row in choices])
+#
+#     return parents
 
 
 # def binary_mutation(population: np.ndarray,
@@ -173,9 +215,9 @@ def __parents_choice(population: np.ndarray, n_parents: int) -> np.ndarray:
 #*args : best idxs, cr, crw, f, fw, h etc go here.
 
 @nb.njit(**nb_pcs())
-def bin_mutate_bin_cross(ci:np.int64,m_pop: np.ndarray,pop: np.ndarray,idx:np.ndarray,f,cr,j_rand):
-    for i in range(m_pop.shape[0]):
-        m_pop[i]=f * (pop[idx[0],i] - pop[idx[1],i]) + pop[idx[2],i] if rand.uniform(0., 1.) < cr or i == j_rand else pop[ci,i]
+def bin_mutate(crr:np.ndarray, ci:np.int64, m_pop: np.ndarray, pop: np.ndarray, idx:np.ndarray, f):
+    for i in crr:
+        m_pop[i]=f * (pop[idx[0],i] - pop[idx[1],i]) + pop[idx[2],i]
 
 
 # def current_to_best_2_binary_mutation(population: np.ndarray,
@@ -214,17 +256,16 @@ def bin_mutate_bin_cross(ci:np.int64,m_pop: np.ndarray,pop: np.ndarray,idx:np.nd
 
 
 @nb.njit(**nb_pcs())
-def c_to_best_2_bin_mutate_bin_cross(ci:np.int64,m_pop_vec: np.ndarray,pop: np.ndarray,idx:np.ndarray,b_idx,f,cr,j_rand):
+def c_to_best_2_bin_mutate(crr:np.ndarray, ci:np.int64, m_pop_vec: np.ndarray, pop: np.ndarray, idx:np.ndarray, b_idx, f):
     """
     Calculates the mutation of a vector based on the
     "current to best/2/bin" mutation. This is
     V_{i, G} = X_{i, G} + F * (X_{best, G} - X_{i, G} + F * (X_{r1. G} - X_{r2, G}
     Also includes binary crossover.
     """
-    for i in range(m_pop_vec.shape[0]):
-        m_pop_vec[i] = pop[ci,i]
-        if rand.uniform(0., 1.) < cr or i == j_rand: #skips one rng vs
-            m_pop_vec[i]+=f * (pop[b_idx,i] - pop[ci,i]) + f * (pop[idx[0],i] - pop[idx[1],i])
+    for i in crr:
+        # uniform first seems to be quicker than checking, so in theory only quicker to switch conditional check order if cr<1/n... which is rare for high dim.
+        m_pop_vec[i]=pop[ci,i] + f * (pop[b_idx,i] - pop[ci,i]) + f * (pop[idx[0],i] - pop[idx[1],i])
 
 
 
@@ -270,19 +311,41 @@ def c_to_best_2_bin_mutate_bin_cross(ci:np.int64,m_pop_vec: np.ndarray,pop: np.n
 #     return keep_bounds(mutated, bounds)
 
 
+def _get_br(ci, f):pass
+@overload(_get_br)
+def _get_br_(ci, b_idx, p_idx):
+    if isinstance(p_idx, types.Array):
+        def _impl(ci, b_idx, p_idx): return b_idx[rand.randint(0, p_idx[ci])]
+    elif isinstance(p_idx,types.Integer):
+        def _impl(ci, b_idx, p_idx): return b_idx[rand.randint(0,p_idx)]
+    else:
+        raise TypeError("Unsupported type for p_idx in _get_br")
+    return _impl
+
+def _get_f(ci, f):pass
+@overload(_get_f)
+def _get_f_(ci, f):
+    if isinstance(f, types.Array):
+        def _impl(ci, f): return f[ci]
+    elif isinstance(f, types.Float):
+        def _impl(ci, f): return f
+    else:
+        raise TypeError("Unsupported type for f in _get_f")
+    return _impl
+
+
 @nb.njit(**nb_pcs())
-def c_to_pbest_mutate_bin_cross(ci:np.int64,m_pop_vec: np.ndarray,pop: np.ndarray,idx:np.ndarray,b_idx:np.ndarray,p_idx:np.ndarray,f:np.ndarray,cr,j_rand):
+def c_to_pbest_mutate(crr:np.ndarray, ci:np.int64, m_pop_vec: np.ndarray, pop: np.ndarray, idx:np.ndarray, b_idx:np.ndarray, p:np.ndarray, f:np.ndarray):
     """
     Calculates the mutation of a vector based on the
     "current to p-best" mutation. Includes binary crossover. This is
     V_{i, G} = X_{i, G} + F * (X_{p_best, G} - X_{i, G} + F * (X_{r1. G} - X_{r2, G}
-    Also includes binary crossover.
     """
-    br=b_idx[rand.randint(0,p_idx[ci])]
-    for i in range(m_pop_vec.shape[0]):
-        m_pop_vec[i] = pop[ci,i]
-        if rand.uniform(0., 1.) < cr or i == j_rand:
-            m_pop_vec[i]+=f[ci] * (pop[br,i] - pop[ci,i]) + f[ci] * (pop[idx[0],i] - pop[idx[1],i])
+    br = _get_br(ci, b_idx, p)
+    for i in crr:
+        scale = _get_f(ci, f)
+        m_pop_vec[i]=pop[ci,i] + scale * (pop[br,i] - pop[ci,i]) + scale * (pop[idx[0],i] - pop[idx[1],i])
+
 
 
 # def current_to_rand_1_mutation(population: np.ndarray,
@@ -321,173 +384,291 @@ def c_to_pbest_mutate_bin_cross(ci:np.int64,m_pop_vec: np.ndarray,pop: np.ndarra
 #     return keep_bounds(mutated, bounds)
 
 @nb.njit(**nb_pcs())
-def c_to_rand1_mutate_bin_cross(ci:np.int64,m_pop_vec: np.ndarray,pop: np.ndarray,idx:np.ndarray,f:np.ndarray,k:np.ndarray,cr,j_rand):
+def c_to_rand1_mutate(crr:np.ndarray, ci:np.int64, m_pop_vec: np.ndarray, pop: np.ndarray, idx:np.ndarray, f:np.ndarray, k:np.ndarray):
     """
     Calculates the mutation of a vector based on the
-    "current to rand/1" mutation. Also includes bin crossover.
+    "current to rand/1" mutation. crr are the crossover indexes, m_pop_vec is already inited with pop.
     U_{i, G} = X_{i, G} + K * (X_{r1, G} - X_{i, G} + F * (X_{r2. G} - X_{r3, G}
     """
-    for i in range(m_pop_vec.shape[0]):
-        m_pop_vec[i] = pop[ci,i]
-        if rand.uniform(0., 1.) < cr or i == j_rand:
-            m_pop_vec[i]+=k[ci] * (pop[idx[0],i] - pop[ci,i]) + f[ci] * (pop[idx[1],i] - pop[idx[2],i])
+    for i in crr:
+        m_pop_vec[i]=pop[ci,i]+ k[ci] * (pop[idx[0],i] - pop[ci,i]) + f[ci] * (pop[idx[1],i] - pop[idx[2],i])
 
 
-def current_to_pbest_weighted_mutation(population: np.ndarray,
-                                       population_fitness: np.ndarray,
-                                       f: np.ndarray,
-                                       f_w: np.ndarray,
-                                       p: float,
-                                       bounds: np.ndarray) -> np.ndarray:
+# def current_to_pbest_weighted_mutation(population: np.ndarray,
+#                                        population_fitness: np.ndarray,
+#                                        f: np.ndarray,
+#                                        f_w: np.ndarray,
+#                                        p: float,
+#                                        bounds: np.ndarray) -> np.ndarray:
+#     """
+#     Calculates the mutation of the entire population based on the
+#     "current to p-best weighted" mutation. This is
+#     V_{i, G} = X_{i, G} + F_w * (X_{p_best, G} - X_{i, G} + F * (X_{r1. G} - X_{r2, G}
+#     :param population: Population to apply the mutation
+#     :type population: np.ndarray
+#     :param population_fitness: Fitness of the given population
+#     :type population_fitness: np.ndarray
+#     :param f: Parameter of control of the mutation. Must be in [0, 2].
+#     :type f: np.ndarray
+#     :param f_w: NumPy Array with the weighted version of the mutation array
+#     :type f_w: np.ndarray
+#     :param p: Percentage of population that can be a p-best. Muest be in (0, 1).
+#     :type p: Union[int, float]
+#     :param bounds: Numpy array of tuples (min, max).
+#                    Each tuple represents a gen of an individual.
+#     :type bounds: np.ndarray
+#     :rtype: np.ndarray
+#     :return: Mutated population
+#     """
+#     # If there's not enough population we return it without mutating
+#     if len(population) < 4:
+#         return population
+#
+#     # 1. We find the best parent
+#     best_index = np.argsort(population_fitness)[:max(2, round(p*len(population)))]
+#
+#     p_best = np.random.choice(best_index, len(population))
+#     # 2. We choose two random parents
+#     parents = __parents_choice(population, 2)
+#     mutated = population + f_w * (population[p_best] - population)
+#     mutated += f * (population[parents[:, 0]] - population[parents[:, 1]])
+#
+#     return keep_bounds(mutated, bounds)
+
+@nb.njit(**nb_pcs())
+def c_to_pbestw_mutate(crr:np.ndarray, ci:np.int64, m_pop_vec: np.ndarray, pop: np.ndarray, idx:np.ndarray, b_idx:np.ndarray, p: np.int64 | np.ndarray, f:np.ndarray, f_w:np.ndarray):
     """
-    Calculates the mutation of the entire population based on the
+    Calculates the mutation of a vector based on the
     "current to p-best weighted" mutation. This is
     V_{i, G} = X_{i, G} + F_w * (X_{p_best, G} - X_{i, G} + F * (X_{r1. G} - X_{r2, G}
-    :param population: Population to apply the mutation
-    :type population: np.ndarray
-    :param population_fitness: Fitness of the given population
-    :type population_fitness: np.ndarray
-    :param f: Parameter of control of the mutation. Must be in [0, 2].
-    :type f: np.ndarray
-    :param f_w: NumPy Array with the weighted version of the mutation array
-    :type f_w: np.ndarray
-    :param p: Percentage of population that can be a p-best. Muest be in (0, 1).
-    :type p: Union[int, float]
-    :param bounds: Numpy array of tuples (min, max).
-                   Each tuple represents a gen of an individual.
-    :type bounds: np.ndarray
-    :rtype: np.ndarray
-    :return: Mutated population
+    Also includes binary crossover.
     """
-    # If there's not enough population we return it without mutating
-    if len(population) < 4:
-        return population
-
-    # 1. We find the best parent
-    best_index = np.argsort(population_fitness)[:max(2, round(p*len(population)))]
-
-    p_best = np.random.choice(best_index, len(population))
-    # 2. We choose two random parents
-    parents = __parents_choice(population, 2)
-    mutated = population + f_w * (population[p_best] - population)
-    mutated += f * (population[parents[:, 0]] - population[parents[:, 1]])
-
-    return keep_bounds(mutated, bounds)
+    #p is not a vector in this one but idk
+    br= _get_br(ci, b_idx, p)
+    for i in crr:
+        m_pop_vec[i] = pop[ci,i]
+        s1 = _get_f(ci, f)
+        s2 = _get_f(ci, f_w)
+        m_pop_vec[i]+=s2 * (pop[br,i] - pop[ci,i]) + s1 * (pop[idx[0],i] - pop[idx[1],i])
 
 
-#uchoice_mutator : unique choice mutator, incorporates the current idx skipping choice selection
+_N=types.none
+
+
+def enforce_bounds(population: np.ndarray,
+                   bounds: np.ndarray, enf_bds):pass
+@overload(enforce_bounds,inline='always')
+def _enforce_bounds(population, bounds,enf_bds):
+    if enf_bds is _N:
+        def _eb(population, bounds,enf_bds):
+            pass
+    else:
+        def _eb(population, bounds,enf_bds):
+            keep_bounds(population,bounds)
+    return _eb
+
+
+@nb.njit(**nb_pcs())
+def bin_cross_init(m_pop_vec:np.ndarray,pop_vec:np.ndarray,idxg:np.ndarray,cr): #I'll assume cr is still an int for now. add array overload if it is happened on.
+    sh=idxg.shape[0]
+    l=0
+    j_rand = rand.randint(0, idxg.shape[0] - 1)
+    for i in range(0,sh):
+        if rand.uniform(0., 1.) < cr or i == j_rand:
+            idxg[l]=i
+            l+=1
+        else:
+            m_pop_vec[i]=pop_vec[i]
+    return idxg[:l]
+
+
+#uchoice_mutator : unique choice mutator, incorporates the current-member-skipping choice selection
 @nb.njit(**nb_cs())
 def uchoice_mutator(population: np.ndarray,
                     m_pop:np.ndarray,
+                    cr: float,
                     bounds: np.ndarray,
-                    n_shuffles:np.int64,
+                    enf_bounds:bool,  #None or anything, None will exclude compilation with search bounds enforcement, theres no reason to have anything but None regardless.
+                    reject_mx:int, #None or int, None will use the smaller no-resampling compilation.
+                    cross_apply,  #these should probably have underscores... but lets user implement their own.
                     mut_apply,
-                    _idx: np.ndarray, #should already be initialized (thread count, len_pop) with ints [0,n) for thread parallelism.
-                    _t_pop:np.ndarray, #temporary population holder, needed to replace the best infeasible.
-                    *args): #best idxs, cr, crw, f, fw, h etc go here for dynamic compile.
+                    _ns: np.int64,  #number of r selections for mutation operator
+                    _idx: np.ndarray,  #should already be initialized (thread count, len_pop) with ints [0,n) for thread parallelism.
+                    _crossgen:np.ndarray,
+                    _t_pop:np.ndarray,  #temporary population holder, needed to replace the best infeasible.
+                    *mut_args): #best idxs, p, k, f, fw, h etc go here for dynamic compile.
+    #Rejection sampling is a "closest to feasible" sampler to diminish bias, but the cost is ~ O(C*pop_size*pop_dims*num_resamples), so can become expensive.
+    #So the user still needs to enforce actually infeasible bounds in the parameter space, so that optimizer is unconstrained in the search space. (unless they enforce_bounds in search space, not recommended)
+    #Then add a fitness discount to eval function. Or enable them in the search space in config. Though some optimizers like lshade-cnepsin don't respect them.
+    #To get even more of a boost it might be worth sorting current vectors by proximity to boundaries and equally spreading that load.
+    #As closer to boundary params will get more rejections.
+
+    #if pop_size*pop_dims*num_resamples< 100k to 500k then probably not worth parallel, the overhead of launching parallel threads can be like 5-10x a couple hundred ops..
+    _uchoice_loop(population, m_pop, bounds, reject_mx, cr, cross_apply, mut_apply, _ns, _idx, _crossgen, _t_pop, *mut_args)
+    #print('Average # of failed resample dimensions per vector: ', rsmps.sum()/(pop_size*population.shape[1]))
+    enforce_bounds(m_pop,bounds,enf_bounds)
+
+
+def _uchoice_loop(population,m_pop,bounds,reject_mx,cr,cross_apply,mut_apply, _ns, _idx,_crossgen,_t_pop,*mut_args): pass
+@overload(_uchoice_loop)
+def _uchoice_loop_(population,m_pop,bounds,reject_mx,cr,cross_apply,mut_apply, _ns, _idx,_crossgen,_t_pop,*mut_args):
+    if reject_mx is _N or bounds is _N or _t_pop is _N:
+        def _r(population,m_pop,bounds,reject_mx,cr,cross_apply,mut_apply, _ns, _idx,_crossgen,_t_pop,*mut_args):
+            _uchoice_nsample_loop(population,m_pop,cr,cross_apply,mut_apply, _ns, _idx,_crossgen,*mut_args)
+        return _r
+    else:
+        def _r(population,m_pop,bounds,reject_mx,cr,cross_apply,mut_apply, _ns, _idx,_crossgen,_t_pop,*mut_args):
+            _uchoice_rejectsample_loop(population,m_pop,bounds,reject_mx,cr,cross_apply,mut_apply, _ns, _idx,_crossgen,_t_pop,*mut_args)
+        return _r
+
+
+@nb.njit(**nb_cs())
+def _uchoice_rejectsample_loop(population,m_pop,bounds,reject_mx,cr,cross_apply,mut_apply, _ns, _idx,_crossgen,_t_pop,*mut_args):
     pop_size = population.shape[0]
     p_d=population.shape[1]
-    reps=max(2, min(pcfg.reject_sample_mx, ceil(pcfg.reject_sample_mult * (p_d ** pcfg.reject_sample_dimorder))))
-    nthds=nb.get_num_threads()
-    # rsmps=np.zeros((nthds,),dtype=np.int64)
-    ld=nb.set_parallel_chunksize(ceil(pop_size/nthds)) #consider making a chunk size merging system when total # ops is clearly small enough.
-    for v in nb.prange(0, pop_size):
-        tid=nb.get_thread_id()
-        #hoping these don't cost anything, so it will pick up on it's last memory location.
-        _s_mem=np.empty((n_shuffles,2),dtype=np.int64) #Yeah does seem a bit quicker
-        #_t_pop=np.empty((p_d,),dtype=np.float64) #Not this tho
-        _bb=population.shape[1]
-        #Rejection sampling will now be a "closest to feasible" sampler to diminish bias, but becomes too expensive the longer it goes.
-        #So the user still needs to enforce actually infeasible bounds in the parameter space, so that optimizer is unconstrained in the search space.
-        #Then add a fitness discount to eval function. Or enable them in the search space in config. Though some optimizers like lshade-cnepsin don't respect them.
-        for _ in range(reps): #This might get more likely to hit with more dimensions so consider a scaling thing, maybe dynamic.
-            for i in range(n_shuffles):
-                # Generate a random index j with i <= j < n
-                j = rand.randint(i, pop_size - 2) #we only skip j, i gives us our selection
-                j= j+1 if j>=v else j #that skip current vector thingy.
-                # Record swapped indices
-                _s_mem[i, 0] = i
-                _s_mem[i, 1] = j
-                # Swap in-place
-                tmp = _idx[tid,i]
-                _idx[tid,i] = _idx[tid,j]
-                _idx[tid,j] = tmp
-            mut_apply(v,_t_pop[tid],population,_idx[tid,:n_shuffles],*args)
-            # Backward pass: revert the random swaps
-            for i in range(n_shuffles - 1, -1, -1):
-                x, y = _s_mem[i, 0], _s_mem[i, 1]
-                tmp = _idx[tid,x]
-                _idx[tid,x] = _idx[tid,y]
-                _idx[tid,y] = tmp
-            sb=bounds_safe(_t_pop[tid],bounds)
-            if sb<_bb:
-                m_pop[v]=_t_pop[tid] #This and bounds safe are probably what is contributing to the linear delay scaling with # dims.
-                _bb=sb
-                if sb==0:
-                    break
-    #     else:
-    #         rsmps[tid]+=_bb
-    nb.set_parallel_chunksize(ld)
-    #print('Average # of failed resample dimensions per vector: ', rsmps.sum()/(pop_size*population.shape[1]))
-    if pcfg.force_search_bounds:
-        keep_bounds(m_pop,bounds) #force search bounds.
-
-
-def crossover(population: np.ndarray, mutated: np.ndarray,
-              cr: Union[int, float]) -> np.ndarray:
-    """
-    Crosses gens from individuals of the last generation and the mutated ones
-    based on the crossover rate. Binary crossover
-    :param population: Previous generation population.
-    :type population: np.ndarray
-    :param mutated: Mutated population.
-    :type population: np.ndarray
-    :param cr: Crossover rate. Must be in [0,1].
-    :type population: Union[int, float]
-    :rtype: np.ndarray
-    :return: Current generation population.
-    """
-    chosen = np.random.rand(*population.shape)
-    j_rand = np.random.randint(0, population.shape[1])
-    chosen[j_rand::population.shape[1]] = 0
-    return np.where(chosen <= cr, mutated, population)
-
-def exponential_crossover(population: np.ndarray, mutated: np.ndarray,
-                          cr: Union[int, float]) -> np.ndarray:
-    """
-        Crosses gens from individuals of the last generation and the mutated ones
-        based on the crossover rate. Exponential crossover.
-        :param population: Previous generation population.
-        :type population: np.ndarray
-        :param mutated: Mutated population.
-        :type population: np.ndarray
-        :param cr: Crossover rate. Must be in [0,1].
-        :type population: Union[int, float]
-        :rtype: np.ndarray
-        :return: Current generation population.
-    """
-    if type(cr) is int or float:
-        cr = np.array([cr] * len(population))
+    reps=reject_mx #min(reject_mx, max(pcfg.reject_sample_mn, ceil(pcfg.reject_sample_mult * (p_d ** pcfg.reject_sample_dimorder))))
+    # if pop_size*pop_dims*num_resamples< 100k to 500k then probably not worth parallel, the overhead of launching parallel threads can be like 5-10x a couple hundred ops..
+    if pop_size*p_d*reject_mx//8>650: #If you are being really anal estimate the # avg of rejections from the previous iterations with an extra array for the divisor.
+        nthds=nb.get_num_threads()
+        ld=nb.set_parallel_chunksize(ceil(population.shape[0]/nthds)) #consider making a chunk size merging system when total # ops is clearly small enough.
+        for v in nb.prange(0, pop_size):
+            tid=nb.get_thread_id()
+            #hoping these don't cost anything, so it will pick up on it's last memory location.
+            _s_mem=np.empty((_ns,2),dtype=np.int64) #Yeah does seem a little quicker
+            _bb=p_d+1
+            _ccr=cross_apply(_t_pop[tid],population[v],_crossgen[tid],cr)
+            for _ in range(reps): #This might get more likely to hit with more dimensions so consider a scaling thing, maybe dynamic.
+                _sw_in(_ns, pop_size, v, _idx, tid, _s_mem)
+                mut_apply(_ccr,v,_t_pop[tid],population,_idx[tid,:_ns],*mut_args)
+                _sw_out(_ns, _idx, tid, _s_mem)
+                sb=bounds_safe(_t_pop[tid],bounds)
+                if sb<_bb:
+                    m_pop[v]=_t_pop[tid] #This and bounds safe are probably what is contributing to the linear delay scaling with # dims.
+                    _bb=sb
+                    if sb==0:
+                        break
+        nb.set_parallel_chunksize(ld)
     else:
-        cr = cr.flatten()
-
-    def __exponential_crossover_1(x: np.ndarray, y: np.ndarray, cr: Union[int, float]) -> np.ndarray:
-        z = x.copy()
-        n = len(x)
-        k = np.random.randint(0, n)
-        j = k
-        l = 0
-        while True:
-            z[j] = y[j]
-            j = (j + 1) % n
-            l += 1
-            if np.random.randn() >= cr or l == n:
-                return z
-
-    return np.array([__exponential_crossover_1(population[i], mutated[i], cr.flatten()[i]) for i in range(len(population))])
+        for v in range(0, pop_size):
+            _s_mem = np.empty((_ns, 2), dtype=np.int64)
+            _bb = p_d + 1
+            _ccr = cross_apply(_t_pop[0], population[v], _crossgen[0], cr)
+            for _ in range(reps):
+                _sw_in(_ns, pop_size, v, _idx, 0, _s_mem)
+                mut_apply(_ccr, v, _t_pop[0], population, _idx[0, :_ns], *mut_args)
+                _sw_out(_ns, _idx, 0, _s_mem)
+                sb = bounds_safe(_t_pop[0], bounds)
+                if sb < _bb:
+                    m_pop[v] = _t_pop[0]
+                    _bb = sb
+                    if sb == 0:
+                        break
 
 
-def selection(population: np.ndarray, new_population: np.ndarray,
+@nb.njit(**nb_cs())
+def _uchoice_nsample_loop(population,m_pop,cr,cross_apply,mut_apply, _ns, _idx,_crossgen,*mut_args):
+    pop_size = population.shape[0]
+    p_d=population.shape[1]
+    if pop_size*(p_d+8)>900: #could end up being different for different computers.
+        nthds=nb.get_num_threads()
+        ld=nb.set_parallel_chunksize(ceil(population.shape[0]/nthds)) #consider making a chunk size merging system when total # ops is clearly small enough.
+        for v in nb.prange(0, pop_size):
+            tid=nb.get_thread_id()
+            _s_mem=np.empty((_ns,2),dtype=np.int64) #Yeah does seem a little quicker
+            _bb=p_d+1
+            _ccr=cross_apply(m_pop[v],population[v],_crossgen[tid],cr)
+            _sw_in(_ns, pop_size, v, _idx, tid, _s_mem)
+            mut_apply(_ccr,v,m_pop[v],population,_idx[tid,:_ns],*mut_args)
+            _sw_out(_ns, _idx, tid, _s_mem)
+        nb.set_parallel_chunksize(ld)
+    else:
+        for v in range(0, pop_size):
+            _s_mem = np.empty((_ns, 2), dtype=np.int64)
+            _bb = p_d + 1
+            _ccr = cross_apply(m_pop[v], population[v], _crossgen[0], cr)
+            _sw_in(_ns, pop_size, v, _idx, 0, _s_mem)
+            mut_apply(_ccr, v, m_pop[v], population, _idx[0, :_ns], *mut_args)
+            _sw_out(_ns, _idx, 0, _s_mem)
+
+
+#@nb.njit(**nb_cs())
+@nb.njit(inline='always')
+def _sw_in(n_shuffles, pop_size, v, _idx, tid, _s_mem):
+    for i in range(n_shuffles):
+        # Generate a random index j with i <= j < n
+        j = rand.randint(i, pop_size - 2)  # we only skip j, i gives us our selection
+        j = j + 1 if j >= v else j  # that skip current vector thingy.
+        # Record swapped indices
+        _s_mem[i, 0] = i
+        _s_mem[i, 1] = j
+        # Swap in-place
+        tmp = _idx[tid, i]
+        _idx[tid, i] = _idx[tid, j]
+        _idx[tid, j] = tmp
+
+@nb.njit(inline='always')
+def _sw_out(n_shuffles, _idx, tid, _s_mem):
+    for i in range(n_shuffles - 1, -1, -1):
+        x, y = _s_mem[i, 0], _s_mem[i, 1]
+        tmp = _idx[tid, x]
+        _idx[tid, x] = _idx[tid, y]
+        _idx[tid, y] = tmp
+
+# def crossover(population: np.ndarray, mutated: np.ndarray,
+#               cr: Union[int, float]) -> np.ndarray:
+#     """
+#     Crosses gens from individuals of the last generation and the mutated ones
+#     based on the crossover rate. Binary crossover
+#     :param population: Previous generation population.
+#     :type population: np.ndarray
+#     :param mutated: Mutated population.
+#     :type population: np.ndarray
+#     :param cr: Crossover rate. Must be in [0,1].
+#     :type population: Union[int, float]
+#     :rtype: np.ndarray
+#     :return: Current generation population.
+#     """
+#     chosen = np.random.rand(*population.shape)
+#     j_rand = np.random.randint(0, population.shape[1])
+#     chosen[j_rand::population.shape[1]] = 0
+#     return np.where(chosen <= cr, mutated, population)
+#
+# def exponential_crossover(population: np.ndarray, mutated: np.ndarray,
+#                           cr: Union[int, float]) -> np.ndarray:
+#     """
+#         Crosses gens from individuals of the last generation and the mutated ones
+#         based on the crossover rate. Exponential crossover.
+#         :param population: Previous generation population.
+#         :type population: np.ndarray
+#         :param mutated: Mutated population.
+#         :type population: np.ndarray
+#         :param cr: Crossover rate. Must be in [0,1].
+#         :type population: Union[int, float]
+#         :rtype: np.ndarray
+#         :return: Current generation population.
+#     """
+#     if type(cr) is int or float:
+#         cr = np.array([cr] * len(population))
+#     else:
+#         cr = cr.flatten()
+#
+#     def __exponential_crossover_1(x: np.ndarray, y: np.ndarray, cr: Union[int, float]) -> np.ndarray:
+#         z = x.copy()
+#         n = len(x)
+#         k = np.random.randint(0, n)
+#         j = k
+#         l = 0
+#         while True:
+#             z[j] = y[j]
+#             j = (j + 1) % n
+#             l += 1
+#             if np.random.randn() >= cr or l == n:
+#                 return z
+#
+#     return np.array([__exponential_crossover_1(population[i], mutated[i], cr.flatten()[i]) for i in range(len(population))])
+
+@nb.njit(**nb_pcs())
+def _selection(population: np.ndarray, new_population: np.ndarray,
               fitness: np.ndarray, new_fitness: np.ndarray,
               return_indexes: bool=False) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
@@ -511,3 +692,17 @@ def selection(population: np.ndarray, new_population: np.ndarray,
         return population, indexes
     else:
         return population
+
+
+@nb.njit(**nb_pcs())
+def select_better(fitness: np.ndarray, new_fitness: np.ndarray,_idxs: np.ndarray) -> np.ndarray:
+    """
+    Selects the best individuals based on their fitness.
+    """
+    bt=0
+    for i in range(fitness.shape[0]):
+        if fitness[i]>new_fitness[i]:
+            _idxs[bt]=i
+        bt+=1
+    return _idxs[:bt]
+
