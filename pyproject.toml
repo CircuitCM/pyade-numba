@@ -21,9 +21,13 @@ dependencies = [
 Home = "https://github.com/CircuitCM/pyade-numba"
 
 [tool.flit.module]
-name = "pyade"
+name = "gopt" #So now we can import it next to pyade if desired.
 
 [project.optional-dependencies]
 intel = [
     'intel-cmplr-lib-rt',
 ]
+
+[tool.flit.sdist]
+#include = ["doc/"]
+exclude = ["testing.py"]
