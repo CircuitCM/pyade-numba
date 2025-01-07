@@ -1,5 +1,5 @@
 import numpy as np
-import pyade.commons
+import gopt.commons
 from typing import Union, Callable, Dict, Any
 
 
@@ -65,11 +65,11 @@ def apply(population_size: int, individual_size: int,
 
     # 1. Initialization
     np.random.seed(seed)
-    population = pyade.commons.init_population(population_size, individual_size, bounds)
+    population = gopt.commons.init_population(population_size, individual_size, bounds)
 
     # 2. SaDE Algorithm
     probability = 0.5
-    fitness = pyade.commons.apply_fitness(population, func, opts)
+    fitness = gopt.commons.apply_fitness(population, func, opts)
     cr_m = 0.5
     f_m = 0.5
 
@@ -95,19 +95,19 @@ def apply(population_size: int, individual_size: int,
 
         # 2.1.2 Apply the mutations
         mutated = population.copy()
-        mutated[choice_1] = pyade.commons.binary_mutation(population[choice_1],
-                                                          f[choice_1].reshape(sum(choice_1), 1), bounds)
-        mutated[choice_2] = pyade.commons.current_to_best_2_binary_mutation(population[choice_2],
-                                                                            fitness[choice_2],
-                                                                            f[choice_2].reshape(sum(choice_2), 1),
-                                                                            bounds)
+        mutated[choice_1] = gopt.commons.binary_mutation(population[choice_1],
+                                                         f[choice_1].reshape(sum(choice_1), 1), bounds)
+        mutated[choice_2] = gopt.commons.current_to_best_2_binary_mutation(population[choice_2],
+                                                                           fitness[choice_2],
+                                                                           f[choice_2].reshape(sum(choice_2), 1),
+                                                                           bounds)
 
         # 2.2 Crossover
-        crossed = pyade.commons.crossover(population, mutated, cr.reshape(population_size, 1))
-        c_fitness = pyade.commons.apply_fitness(crossed, func, opts)
+        crossed = gopt.commons.crossover(population, mutated, cr.reshape(population_size, 1))
+        c_fitness = gopt.commons.apply_fitness(crossed, func, opts)
 
         # 2.3 Selection
-        population = pyade.commons.selection(population, crossed, fitness, c_fitness)
+        population = gopt.commons.selection(population, crossed, fitness, c_fitness)
         winners = c_fitness < fitness
         fitness[winners] = c_fitness[winners]
 

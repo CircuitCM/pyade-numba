@@ -1,4 +1,4 @@
-import pyade.commons
+import gopt.commons
 import numpy as np
 import math
 import scipy.stats
@@ -77,8 +77,8 @@ def apply(population_size: int, individual_size: int, bounds: np.ndarray,
 
     # 1. Initialization
     # 1.1 Initialize population at first generation
-    population = pyade.commons.init_population(population_size, individual_size, bounds)
-    fitness = pyade.commons.apply_fitness(population, func, opts)
+    population = gopt.commons.init_population(population_size, individual_size, bounds)
+    fitness = gopt.commons.apply_fitness(population, func, opts)
 
     # 1.2 Initialize memory of first control settings
     u_f = np.ones(memory_size) * .5
@@ -165,8 +165,8 @@ def apply(population_size: int, individual_size: int, bounds: np.ndarray,
 
             f = np.clip(f, 0.05, 1)
 
-        mutated = pyade.commons.current_to_pbest_mutation(population, fitness, f.reshape(current_size, 1),
-                                                          np.ones(current_size) * p, bounds)
+        mutated = gopt.commons.current_to_pbest_mutation(population, fitness, f.reshape(current_size, 1),
+                                                         np.ones(current_size) * p, bounds)
 
         # Crossover
         random_index = np.random.randint(0, memory_size)
@@ -180,8 +180,8 @@ def apply(population_size: int, individual_size: int, bounds: np.ndarray,
 
         crossed = population.copy()
         # Crossover: Binomial Crossover
-        crossed[bin_indexes] = pyade.commons.crossover(population[bin_indexes], mutated[bin_indexes],
-                                                       cr[bin_indexes].reshape(len(bin_indexes), 1))
+        crossed[bin_indexes] = gopt.commons.crossover(population[bin_indexes], mutated[bin_indexes],
+                                                      cr[bin_indexes].reshape(len(bin_indexes), 1))
 
         # Covariance matrix learning with euclidean neighborhood
         # A. Search for best in population
@@ -215,18 +215,18 @@ def apply(population_size: int, individual_size: int, bounds: np.ndarray,
         cov_population = np.dot(population[cov_indexes], tm)
         cov_mutated = np.dot(mutated[cov_indexes], tm)
 
-        cov_crossed = pyade.commons.crossover(cov_population, cov_mutated,
-                                              cr[cov_indexes].reshape(len(cov_indexes), 1))
+        cov_crossed = gopt.commons.crossover(cov_population, cov_mutated,
+                                             cr[cov_indexes].reshape(len(cov_indexes), 1))
 
         # E. Go back the te original coordinate system
 
         crossed[cov_indexes] = np.dot(cov_crossed, tm_.T)
-        crossed_fitness = pyade.commons.apply_fitness(crossed, func, opts)
+        crossed_fitness = gopt.commons.apply_fitness(crossed, func, opts)
         num_evals += current_size
 
         # Selection
-        population, indexes = pyade.commons.selection(population, crossed, fitness,
-                                                      crossed_fitness, return_indexes=True)
+        population, indexes = gopt.commons.selection(population, crossed, fitness,
+                                                     crossed_fitness, return_indexes=True)
         winners = crossed_fitness < fitness
 
         # Update success lists to recalculate probabilities

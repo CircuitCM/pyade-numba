@@ -1,15 +1,15 @@
 import numpy as np
 
-import pyade.de
-import pyade.jade
-import pyade.sade
-import pyade.shade
-import pyade.lshade
-import pyade.ilshade
-import pyade.jso
-import pyade.lshadecnepsin
-import pyade.mpede
-import pyade.commons
+import gopt.de
+import gopt.jade
+import gopt.sade
+import gopt.shade
+import gopt.lshade
+import gopt.ilshade
+import gopt.jso
+import gopt.lshadecnepsin
+import gopt.mpede
+import gopt.commons
 
 import random
 
@@ -23,7 +23,7 @@ def test_init_population():
         ind_size = random.randint(3, 100)
         a = random.randint(-1000, 0)
         b = random.randint(0, 1000)
-        pop = pyade.commons.init_population(pop_size, ind_size, [[a, b] * ind_size])
+        pop = gopt.commons.init_population(pop_size, ind_size, [[a, b] * ind_size])
         assert pop.shape == (pop_size, ind_size)
 
 
@@ -33,11 +33,11 @@ def test_boundaries():
         ind_size = random.randint(3, 100)
         a = random.randint(-1000, 0)
         b = random.randint(0, 1000)
-        pop = pyade.commons.init_population(pop_size, ind_size, [[a, b] * ind_size])
+        pop = gopt.commons.init_population(pop_size, ind_size, [[a, b] * ind_size])
 
         a /= 2
         b /= 2
-        pop = pyade.commons.keep_bounds(pop, np.array([[a, b] * ind_size]))
+        pop = gopt.commons.keep_bounds(pop, np.array([[a, b] * ind_size]))
         assert pop.min() >= a
         assert pop.min() <= b
 
@@ -75,8 +75,8 @@ def my_callback(**kwargs):
 def test_algorithms():
     global output
 
-    algorithms = [pyade.de, pyade.sade, pyade.jade, pyade.shade, pyade.lshade, pyade.lshadecnepsin, pyade.ilshade,
-                  pyade.jso, pyade.mpede]
+    algorithms = [gopt.de, gopt.sade, gopt.jade, gopt.shade, gopt.lshade, gopt.lshadecnepsin, gopt.ilshade,
+                  gopt.jso, gopt.mpede]
 
     for algorithm in algorithms:
         params = algorithm.get_default_params(dim=10)

@@ -13,31 +13,34 @@ pip install pyadewheel
 ```
 ## Performance Settings
 Will alter numba compilations, change before calling apply on optimizers. Set to high performance by default.
+
 ```python
-from pyade.commons import numba_comp_settings
-numba_comp_settings.update(dict(fastmath=True,parallel=True,error_model='numpy'))
+from gopt.commons import numba_comp_settings
+
+numba_comp_settings.update(dict(fastmath=True, parallel=True, error_model='numpy'))
 ```
 To reset compilations with new settings without restarting the interpreter, can be done with aimport on the commons and optimizer module you are using.
 
 
 ## Library use
 You can use any of the following algorithms: DE, SaDE, JADE, SHADE, L-SHADE, iL-SHADE, jSO, L-SHADE-cnEpSin, and MPEDE. This is an example of use of the library:
+
 ```python
-# We import the algorithm (You can use from pyade import * to import all of them)
-import pyade.ilshade 
+# We import the algorithm (You can use from gopt import * to import all of them)
+import gopt.ilshade
 import numpy as np
 
 # You may want to use a variable so its easier to change it if we want
-algorithm = pyade.ilshade 
+algorithm = gopt.ilshade
 
 # We get default parameters for a problem with two variables
-params = algorithm.get_default_params(dim=2) 
+params = algorithm.get_default_params(dim=2)
 
 # We define the boundaries of the variables
-params['bounds'] = np.array([[-75, 75]] * 2) 
+params['bounds'] = np.array([[-75, 75]] * 2)
 
 # We indicate the function we want to minimize
-params['func'] = lambda x: x[0]**2 + x[1]**2 + x[0]*x[1] - 500 
+params['func'] = lambda x: x[0] ** 2 + x[1] ** 2 + x[0] * x[1] - 500
 
 # We run the algorithm and obtain the results
 solution, fitness = algorithm.apply(**params)
@@ -52,12 +55,12 @@ By default, params['opts'] will be None, and you may use the library as in the p
 In the following example, we will set two fixed optional parameters, and change them between two executions of the algorithm.
 
 ```python
-# We import the algorithm (You can use from pyade import * to import all of them)
-import pyade.ilshade
+# We import the algorithm (You can use from gopt import * to import all of them)
+import gopt.ilshade
 import numpy as np
 
 # You may want to use a variable so its easier to change it if we want
-algorithm = pyade.ilshade
+algorithm = gopt.ilshade
 
 # We get default parameters for a problem with two variables
 params = algorithm.get_default_params(dim=2)
@@ -67,7 +70,7 @@ params['bounds'] = np.array([[-75, 75]] * 2)
 
 # We indicate the function we want to minimize
 params['opts'] = (2, 500)
-params['func'] = lambda x, y: x[0]**2 + x[1]**y[0] + x[0]*x[1] - y[1]
+params['func'] = lambda x, y: x[0] ** 2 + x[1] ** y[0] + x[0] * x[1] - y[1]
 
 # We run the algorithm and obtain the results
 solution, fitness = algorithm.apply(**params)

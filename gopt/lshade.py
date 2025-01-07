@@ -1,4 +1,4 @@
-import pyade.commons
+import gopt.commons
 import numpy as np
 import scipy.stats
 import random
@@ -7,23 +7,23 @@ from typing import Callable, Union, Dict, Any
 
 def get_default_params(dim: int):
     """
-        Returns the default parameters of the jSO Algorithm
+        Returns the default parameters of the L-SHADE Differential Evolution Algorithm.
         :param dim: Size of the problem (or individual).
         :type dim: int
-        :return: Dict with the default parameters of the jSO Algorithm.
+        :return: Dict with the default parameters of the L-SHADE Differential
+        Evolution Algorithm.
         :rtype dict
     """
-    return {'population_size': int(round(25 * np.log(dim) * np.sqrt(dim))),
-            'individual_size': dim, 'memory_size': 5,
-            'max_evals': 10000 * dim, 'seed': None, 'callback': None, 'opts': None}
+    return {'max_evals': 10000 * dim, 'population_size': 18 * dim, 'individual_size': dim,
+            'memory_size': 6, 'callback': None, 'seed': None, 'opts': None}
 
 
 def apply(population_size: int, individual_size: int, bounds: np.ndarray,
-          func: Callable[[np.ndarray], float], opts: Any,
+          func: Callable[[np.ndarray], np.float64], opts: Any,
           memory_size: int, callback: Callable[[Dict], Any],
           max_evals: int, seed: Union[int, None]) -> [np.ndarray, int]:
     """
-    Applies the jSO differential evolution algorithm.
+    Applies the L-SHADE Differential Evolution Algorithm.
     :param population_size: Size of the population.
     :type population_size: int
     :param individual_size: Number of gens/features of an individual.
@@ -57,7 +57,7 @@ def apply(population_size: int, individual_size: int, bounds: np.ndarray,
         raise ValueError("individual_size must be a positive integer.")
 
     if type(max_evals) is not int or max_evals <= 0:
-        raise ValueError("max_evals must be a positive integer.")
+        raise ValueError("max_iter must be a positive integer.")
 
     if type(bounds) is not np.ndarray or bounds.shape != (individual_size, 2):
         raise ValueError("bounds must be a NumPy ndarray.\n"
@@ -71,21 +71,21 @@ def apply(population_size: int, individual_size: int, bounds: np.ndarray,
     random.seed(seed)
 
     # 1. Initialization
-    population = pyade.commons.init_population(population_size, individual_size, bounds)
-    current_size = population_size
-    m_cr = np.ones(population_size) * .8
-    m_f = np.ones(population_size) * .5
+    population = gopt.commons.init_population(population_size, individual_size, bounds)
+    init_size = population_size
+    m_cr = np.ones(memory_size) * 0.5
+    m_f = np.ones(memory_size) * 0.5
     archive = []
     k = 0
-    fitness = pyade.commons.apply_fitness(population, func, opts)
+    fitness = gopt.commons.apply_fitness(population, func, opts)
 
-    memory_size = population_size
-    memory_indexes = list(range(memory_size))
-    num_evals = population_size
+    all_indexes = list(range(memory_size))
     current_generation = 0
-    p_max = .25
-    p_min = p_max / 2
-    p = p_max
+    num_evals = population_size
+    # Calculate max_iters
+    n = population_size
+    i = 0
+    max_iters = 0
 
     # Calculate max_iters
     n = population_size
@@ -93,56 +93,31 @@ def apply(population_size: int, individual_size: int, bounds: np.ndarray,
     max_iters = 0
     while i < max_evals:
         max_iters += 1
-        n = round((4 - population_size) / max_evals * i + population_size)
+        n = round((4 - init_size) / max_evals * i + init_size)
         i += n
 
     while num_evals < max_evals:
         # 2.1 Adaptation
-        r = np.random.choice(memory_indexes, current_size)
-        m_cr[- 1] = 0.9
-        m_f[-1] = 0.9
-
-        cr = np.random.normal(m_cr[r], 0.1, current_size)
+        r = np.random.choice(all_indexes, population_size)
+        cr = np.random.normal(m_cr[r], 0.1, population_size)
         cr = np.clip(cr, 0, 1)
         cr[m_cr[r] == 1] = 0
-        cr[m_cr[r] < 0] = 0
+        f = scipy.stats.cauchy.rvs(loc=m_f[r], scale=0.1, size=population_size)
+        f[f > 1] = 0
 
-        if current_generation < (max_iters / 4):
-            cr[cr < 0.7] = 0.7
-        elif current_generation < (max_iters / 2):
-            cr[cr < 0.6] = 0.6
-
-        f = scipy.stats.cauchy.rvs(loc=m_f[r], scale=0.1, size=current_size)
         while sum(f <= 0) != 0:
-            r = np.random.choice(memory_indexes, sum(f <= 0))
+            r = np.random.choice(all_indexes, sum(f <= 0))
             f[f <= 0] = scipy.stats.cauchy.rvs(loc=m_f[r], scale=0.1, size=sum(f <= 0))
 
-        f = np.clip(f, 0, 1)
-        if current_generation < 0.6 * max_iters:
-            f = np.clip(f, 0, 0.7)
-
+        p = np.ones(population_size) * .11
 
         # 2.2 Common steps
-        # 2.2.1 Calculate weights for mutation
-        weighted = f.copy().reshape(len(f), 1)
-
-        if num_evals < 0.2 * max_evals:
-            weighted *= .7
-        elif num_evals < 0.4 * max_evals:
-            weighted *= .8
-        else:
-            weighted *= 1.2
-
-        weighted = np.clip(weighted, 0, 1)
-        # print(min(fitness), min(cr), max(cr), min(f), max(f))
-        mutated = pyade.commons.current_to_pbest_weighted_mutation(population, fitness, f.reshape(len(f), 1),
-                                                                   weighted, p, bounds)
-        crossed = pyade.commons.crossover(population, mutated, cr.reshape(len(f), 1))
-        c_fitness = pyade.commons.apply_fitness(crossed, func, opts)
-
-        num_evals += current_size
-        population, indexes = pyade.commons.selection(population, crossed,
-                                                      fitness, c_fitness, return_indexes=True)
+        mutated = gopt.commons.current_to_pbest_mutation(population, fitness, f.reshape(len(f), 1), p, bounds)
+        crossed = gopt.commons.crossover(population, mutated, cr.reshape(len(f), 1))
+        c_fitness = gopt.commons.apply_fitness(crossed, func, opts)
+        num_evals += population_size
+        population, indexes = gopt.commons.selection(population, crossed,
+                                                     fitness, c_fitness, return_indexes=True)
 
         # 2.3 Adapt for next generation
         archive.extend(population[indexes])
@@ -153,34 +128,27 @@ def apply(population_size: int, individual_size: int, bounds: np.ndarray,
 
             weights = np.abs(fitness[indexes] - c_fitness[indexes])
             weights /= np.sum(weights)
-
-            if max(cr) != 0:
-                m_cr[k] = (np.sum(weights * cr[indexes]**2) / np.sum(weights * cr[indexes]) + m_cr[-1]) / 2
-            else:
+            m_cr[k] = np.sum(weights * cr[indexes] ** 2) / np.sum(weights * cr[indexes])
+            if np.isnan(m_cr[k]):
                 m_cr[k] = 1
-
-            m_f[k] = np.sum(weights * f[indexes]**2) / np.sum(weights * f[indexes])
-
+            m_f[k] = np.sum(weights * f[indexes] ** 2) / np.sum(weights * f[indexes])
             k += 1
             if k == memory_size:
                 k = 0
 
         fitness[indexes] = c_fitness[indexes]
         # Adapt population size
-        new_population_size = round((4 - population_size) / max_evals * num_evals + population_size)
-        if current_size > new_population_size:
-            current_size = new_population_size
-            best_indexes = np.argsort(fitness)[:current_size]
+        new_population_size = round((4 - init_size) / max_evals * num_evals + init_size)
+        if population_size > new_population_size:
+            population_size = new_population_size
+            best_indexes = np.argsort(fitness)[:population_size]
             population = population[best_indexes]
             fitness = fitness[best_indexes]
-            if k == memory_size:
+            if k == init_size:
                 k = 0
 
-        # Adapt p
-        p = (p_max - p_min) / max_evals * num_evals + p_min
         if callback is not None:
             callback(**(locals()))
-
         current_generation += 1
 
     best = np.argmin(fitness)

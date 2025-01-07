@@ -1,28 +1,30 @@
-import pyade.commons
+import gopt.commons
 import numpy as np
+import scipy.stats
+import random
 from typing import Callable, Union, Dict, Any
 
 
-def get_default_params(dim: int) -> dict:
+def get_default_params(dim: int):
     """
-        Returns the default parameters of the JADE Differential Evolution Algorithm.
+        Returns the default parameters of the SHADE Differential Evolution Algorithm.
         :param dim: Size of the problem (or individual).
         :type dim: int
-        :return: Dict with the default parameters of the JADE Differential
+        :return: Dict with the default parameters of the SHADE Differential
         Evolution Algorithm.
         :rtype dict
-        """
-    pop_size = 10 * dim
-    return {'max_evals': 10000 * dim, 'individual_size': dim, 'callback': None,
-            'population_size': pop_size, 'c': 0.1, 'p': max(.05, 3/pop_size), 'seed': None}
+    """
+    return {'max_evals': 10000 * dim, 'memory_size': 100,
+            'individual_size': dim, 'population_size': 10 * dim,
+            'callback': None, 'seed': None, 'opts': None}
 
 
 def apply(population_size: int, individual_size: int, bounds: np.ndarray,
           func: Callable[[np.ndarray], float], opts: Any,
-          p: Union[int, float], c: Union[int, float], callback: Callable[[Dict], Any],
+          memory_size: int, callback: Callable[[Dict], Any],
           max_evals: int, seed: Union[int, None]) -> [np.ndarray, int]:
     """
-    Applies the JADE Differential Evolution algorithm.
+    Applies the SHADE differential evolution algorithm.
     :param population_size: Size of the population.
     :type population_size: int
     :param individual_size: Number of gens/features of an individual.
@@ -36,10 +38,8 @@ def apply(population_size: int, individual_size: int, bounds: np.ndarray,
     :type func: Callable[[np.ndarray], float]
     :param opts: Optional parameters for the fitness function.
     :type opts: Any type.
-    :param p: Parameter to choose the best vectors. Must be in (0, 1].
-    :type p: Union[int, float]
-    :param c: Variable to control parameter adoption. Must be in [0, 1].
-    :type c: Union[int, float]
+    :param memory_size: Size of the internal memory.
+    :type memory_size: int
     :param callback: Optional function that allows read access to the state of all variables once each generation.
     :type callback: Callable[[Dict], Any]
     :param max_evals: Number of evaluations after the algorithm is stopped.
@@ -68,38 +68,59 @@ def apply(population_size: int, individual_size: int, bounds: np.ndarray,
     if type(seed) is not int and seed is not None:
         raise ValueError("seed must be an integer or None.")
 
-    if type(p) not in [int, float] and 0 < p <= 1:
-        raise ValueError("p must be a real number in (0, 1].")
-    if type(c) not in [int, float] and 0 <= c <= 1:
-        raise ValueError("c must be an real number in [0, 1].")
-
     np.random.seed(seed)
+    random.seed(seed)
 
-    # 1. Init population
-    population = pyade.commons.init_population(population_size, individual_size, bounds)
-    u_cr = 0.5
-    u_f = 0.6
+    # 1. Initialization
+    population = gopt.commons.init_population(population_size, individual_size, bounds)
+    m_cr = np.ones(memory_size) * 0.5
+    m_f = np.ones(memory_size) * 0.5
+    archive = []
+    k = 0
+    fitness = gopt.commons.apply_fitness(population, func, opts)
 
-    p = np.ones(population_size) * p
-    fitness = pyade.commons.apply_fitness(population, func, opts)
+    all_indexes = list(range(memory_size))
     max_iters = max_evals // population_size
     for current_generation in range(max_iters):
-        # 2.1 Generate parameter values for current generation
-        cr = np.random.normal(u_cr, 0.1, population_size)
-        f = np.random.rand(population_size // 3) * 1.2
-        f = np.concatenate((f, np.random.normal(u_f, 0.1, population_size - (population_size // 3))))
+        # 2.1 Adaptation
+        r = np.random.choice(all_indexes, population_size)
+        cr = np.random.normal(m_cr[r], 0.1, population_size)
+        cr = np.clip(cr, 0, 1)
+        cr[cr == 1] = 0
+        f = scipy.stats.cauchy.rvs(loc=m_f[r], scale=0.1, size=population_size)
+        f[f > 1] = 0
+
+        while sum(f <= 0) != 0:
+            r = np.random.choice(all_indexes, sum(f <= 0))
+            f[f <= 0] = scipy.stats.cauchy.rvs(loc=m_f[r], scale=0.1, size=sum(f <= 0))
+
+        p = np.random.uniform(low=2/population_size, high=0.2, size=population_size)
 
         # 2.2 Common steps
-        mutated = pyade.commons.current_to_pbest_mutation(population, fitness, f.reshape(len(f), 1), p, bounds)
-        crossed = pyade.commons.crossover(population, mutated, cr.reshape(len(f), 1))
-        c_fitness = pyade.commons.apply_fitness(crossed, func, opts)
-        population, indexes = pyade.commons.selection(population, crossed,
-                                                      fitness, c_fitness, return_indexes=True)
+        mutated = gopt.commons.current_to_pbest_mutation(population, fitness, f.reshape(len(f), 1), p, bounds)
+        crossed = gopt.commons.crossover(population, mutated, cr.reshape(len(f), 1))
+        c_fitness = gopt.commons.apply_fitness(crossed, func, opts)
+        population, indexes = gopt.commons.selection(population, crossed,
+                                                     fitness, c_fitness, return_indexes=True)
 
         # 2.3 Adapt for next generation
-        if len(indexes) != 0:
-            u_cr = (1 - c) * u_cr + c * np.mean(cr[indexes])
-            u_f = (1 - c) * u_f + c * (np.sum(f[indexes]**2) / np.sum(f[indexes]))
+        archive.extend(population[indexes])
+
+        if len(indexes) > 0:
+            if len(archive) > memory_size:
+                archive = random.sample(archive, memory_size)
+            if max(cr) != 0:
+                weights = np.abs(fitness[indexes] - c_fitness[indexes])
+                weights /= np.sum(weights)
+                m_cr[k] = np.sum(weights * cr[indexes])
+            else:
+                m_cr[k] = 1
+
+            m_f[k] = np.sum(f[indexes]**2)/np.sum(f[indexes])
+
+            k += 1
+            if k == memory_size:
+                k = 0
 
         fitness[indexes] = c_fitness[indexes]
         if callback is not None:

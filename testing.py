@@ -1,8 +1,8 @@
 import numpy as np
 import numba as nb
 from scipy.stats._qmc import Sobol
-import pyade.config as pcfg
-#from pyade.config import reject_sample_mx,reject_sample_dimorder,reject_sample_mult,reject_sample_min,force_search_bounds,BIN_MUTATE_R
+import gopt.config as pcfg
+#from gopt.config import reject_sample_mx,reject_sample_dimorder,reject_sample_mult,reject_sample_min,force_search_bounds,BIN_MUTATE_R
 from typing import Callable, Union, List, Tuple, Any
 import random as rand
 from math import ceil,floor
@@ -310,8 +310,8 @@ def bin_mutate(crr:np.ndarray, ci:np.int64, m_pop: np.ndarray, pop: np.ndarray, 
     for i in crr:
         m_pop[i]=f * (pop[idx[0],i] - pop[idx[1],i]) + pop[idx[2],i]
 
-def enforce_bounds(population: np.ndarray,
-                   bounds: np.ndarray, enf_bds):pass
+
+def enforce_bounds(population: np.ndarray,bounds: np.ndarray, enf_bds):pass
 @overload(enforce_bounds,inline='always')
 def _enforce_bounds(population, bounds,enf_bds):
     if enf_bds is _N:
@@ -416,7 +416,7 @@ def _uchoice_rejectsample_loop(population,m_pop,bounds,reject_mx,cr,cross_apply,
     p_d=population.shape[1]
     reps=reject_mx #min(reject_mx, max(pcfg.reject_sample_mn, ceil(pcfg.reject_sample_mult * (p_d ** pcfg.reject_sample_dimorder))))
     # if pop_size*pop_dims*num_resamples< 100k to 500k then probably not worth parallel, the overhead of launching parallel threads can be like 5-10x a couple hundred ops..
-    if pop_size*p_d*reject_mx//8>650: #If you are being really anal estimate the # avg of rejections from the previous iterations with an extra array for the divisor.
+    if pop_size*(p_d+20)*reject_mx//8>1100: #If you are being really anal estimate the # avg of rejections from the previous iterations with an extra array for the divisor.
         nthds=nb.get_num_threads()
         ld=nb.set_parallel_chunksize(ceil(population.shape[0]/nthds)) #consider making a chunk size merging system when total # ops is clearly small enough.
         for v in nb.prange(0, pop_size):
@@ -478,7 +478,7 @@ def _uchoice_rejectsample_loop_s(population,m_pop,bounds,reject_mx,cr,cross_appl
 def _uchoice_nsample_loop(population,m_pop,cr,cross_apply,mut_apply, _ns, _idx,_crossgen,*mut_args):
     pop_size = population.shape[0]
     p_d=population.shape[1]
-    if pop_size*(p_d+8)>900: #could end up being different for different computers.
+    if pop_size*(p_d+20)>1100: #could end up being different for different computers.
         nthds=nb.get_num_threads()
         ld=nb.set_parallel_chunksize(ceil(population.shape[0]/nthds)) #consider making a chunk size merging system when total # ops is clearly small enough.
         for v in nb.prange(0, pop_size):
@@ -647,7 +647,7 @@ if __name__=='__main__':
     np.set_printoptions(suppress=True)
 
     #old_run()
-    mutation_parallel_tradeoff_dim(130,160,6,80,80)
+    mutation_parallel_tradeoff_dim(10,50,24,80,80)
 
 
 def old_run():

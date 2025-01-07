@@ -1,4 +1,4 @@
-import pyade.commons
+import gopt.commons
 import numpy as np
 import scipy.stats
 import random
@@ -71,13 +71,13 @@ def apply(population_size: int, individual_size: int, bounds: np.ndarray,
     random.seed(seed)
 
     # 1. Initialization
-    population = pyade.commons.init_population(population_size, individual_size, bounds)
+    population = gopt.commons.init_population(population_size, individual_size, bounds)
     current_size = population_size
     m_cr = np.ones(memory_size) * .8
     m_f = np.ones(memory_size) * .5
     archive = []
     k = 0
-    fitness = pyade.commons.apply_fitness(population, func, opts)
+    fitness = gopt.commons.apply_fitness(population, func, opts)
 
     memory_indexes = list(range(memory_size))
     num_evals = 0
@@ -123,12 +123,12 @@ def apply(population_size: int, individual_size: int, bounds: np.ndarray,
             f[f > 0.9] = 0.9
 
         # 2.2 Common steps
-        mutated = pyade.commons.current_to_pbest_mutation(population, fitness, f.reshape(len(f), 1), p_i, bounds)
-        crossed = pyade.commons.crossover(population, mutated, cr.reshape(len(f), 1))
-        c_fitness = pyade.commons.apply_fitness(crossed, func, opts)
+        mutated = gopt.commons.current_to_pbest_mutation(population, fitness, f.reshape(len(f), 1), p_i, bounds)
+        crossed = gopt.commons.crossover(population, mutated, cr.reshape(len(f), 1))
+        c_fitness = gopt.commons.apply_fitness(crossed, func, opts)
         num_evals += current_size
-        population, indexes = pyade.commons.selection(population, crossed,
-                                                      fitness, c_fitness, return_indexes=True)
+        population, indexes = gopt.commons.selection(population, crossed,
+                                                     fitness, c_fitness, return_indexes=True)
 
         # 2.3 Adapt for next generation
         archive.extend(population[indexes])

@@ -1,6 +1,6 @@
 
 #NOTE: All lower case variables can be modified to change compile time settings. Upper case leave alone unless you know what you are doing.
-#The user can import this module first, change these values like pyade.config.reject_sample_dimorder=2. Then import the optimizer.
+#The user can import this module first, change these values like gopt.config.reject_sample_dimorder=2. Then import the optimizer.
 #Remember to trigger recompilations/reimport of optimizers if editing these values.
 
 #This might now actually introduce some bias against search on certain dimensions given binomial cross gaurantee not a single dimension for
