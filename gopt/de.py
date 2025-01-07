@@ -28,7 +28,7 @@ def apply_de(pop_eval: Callable,
              f: float=None, #If None jitters between .5 and 1.
              cr: float=.7,
              init_spec: Callable | str | np.ndarray = 'sobol',  #If 'sobol', or 'rand' selects from uniform. Otherwise provide array or initializer.
-             pop_dim: Sequence[int,int]=None, #If none, then init_spec needs to be a callable or array of (pop_sz, individual_sz).
+             pop_dim: tuple|list|np.ndarray|None=None, #If None, then init_spec needs to be a callable or array of (pop_sz, individual_sz).
              bounds: A = None, #Required if you don't init your own population/supply a callable that uses pop and indiv size.
              max_evals: int = 10000,
              cross_type:int=CrossoverSelector.BIN,#for now its only bin. can add others if helpful in the future.
