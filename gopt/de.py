@@ -130,6 +130,7 @@ def _de_bin_mutate_bc(population: A,
                             f: float, cr: float, #if f==-1. then jitter along .5 1.
                             seed: int,
                             cross_apply: Callable,
+                            stop_apply:Callable,
                             pop_eval: Callable,
                             _m_pop:A,_idx:A,_crr:A,_t_pop:A,_ftdiym:A, _idxs:A,
                             *eval_opts) -> tuple[A,A]:
@@ -137,6 +138,7 @@ def _de_bin_mutate_bc(population: A,
     for current_generation in range(max_iters):
         cmn.uchoice_mutator(population, _m_pop,cr, bounds, enf_bounds, reject_mx, cross_apply, cmn.bin_mutate, cfg.BIN_MUTATE_R, _idx, _crr, _t_pop, tf)
         tf=_the_rest(population,_m_pop,_ftdiym,_idxs,f,pop_eval,*eval_opts)
+        if stop_apply is not None and stop_apply(population,_ftdiym):break
     #Old behavior, returns best from last gen, the user should actually track progress within the pop_eval callable.
     _b = np.argmin(_ftdiym)
     return population[_b], _ftdiym[_b]
@@ -149,6 +151,7 @@ def _de_c_t_best2_bc(population: A,
                             f: float, cr: float, #if f==-1. then jitter along .5 1.
                             seed: int,
                             cross_apply: Callable,
+                            stop_apply: Callable,
                             pop_eval: Callable,
                             _m_pop:A,_idx:A,_crr:A,_t_pop:A,_ftdiym:A, _idxs:A,
                             *eval_opts) -> tuple[A,A]:
@@ -158,6 +161,7 @@ def _de_c_t_best2_bc(population: A,
         cmn.uchoice_mutator(population, _m_pop,cr, bounds, enf_bounds, reject_mx, cross_apply, cmn.c_to_best_2_bin_mutate, cfg.C_T_B2_MUTATE_R, _idx, _crr, _t_pop, _b,tf)
         tf=_the_rest(population,_m_pop,_ftdiym,_idxs,f,pop_eval,*eval_opts)
         _b = np.argmin(_ftdiym)
+        if stop_apply is not None and stop_apply(population,_ftdiym):break
     return population[_b], _ftdiym[_b]
 
 @cmn.compile_with_fallback
@@ -168,6 +172,7 @@ def _de_c_t_pbest_bc(population: A,
                             f: float, p:int, cr: float, #if f==-1. then jitter along .5 1.
                             seed: int,
                             cross_apply: Callable,
+                            stop_apply: Callable,
                             pop_eval: Callable,
                             _m_pop:A,_idx:A,_crr:A,_t_pop:A,_ftdiym:A, _idxs:A,
                             *eval_opts) -> tuple[A,A]:
@@ -179,6 +184,7 @@ def _de_c_t_pbest_bc(population: A,
         cmn.uchoice_mutator(population, _m_pop,cr, bounds, enf_bounds, reject_mx, cross_apply, cmn.c_to_pbest_mutate, cfg.C_T_PB_MUTATE_R, _idx, _crr, _t_pop, _b, tp, tf)
         tf=_the_rest(population,_m_pop,_ftdiym,_idxs,f,pop_eval,*eval_opts)
         _b = np.argsort(_ftdiym)
+        if stop_apply is not None and stop_apply(population,_ftdiym):break
     _b = np.argmin(_ftdiym)
     return population[_b], _ftdiym[_b]
 
