@@ -37,6 +37,7 @@ def apply_de(pop_eval: Callable,
              reject_sample_max:int= None, #Must be >1 or None, If None then no rejection_sampling. Can reduce boundary bias, and increase meaningful search in valid boundaries for same # population evals.
              p_best:int=.11, #Only used if a probability wgt'd mutator is used. jitters between (0,.5] if None.
              seed:int=42_420_69_9001,
+             stop_condition:Callable|float|None=None,
              *eval_opts) -> tuple[A,A]:
     """
     Applies the standard differential evolution algorithm.

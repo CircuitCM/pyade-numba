@@ -101,6 +101,19 @@ def lnorm_bounds_cost(population: np.ndarray,
         bc[i] += _scaled_bc(population[i, n],bounds[n],scale)**norm
     return bc
 
+def mk_fitness_thresh_stop(fitn:float=0.):
+    @nb.njit(inline='always')
+    def f(population,fitness):
+        return fitness_threshold_stop(population,fitness,fitn)
+    return f
+
+@nb.njit(**nb_pcs())
+def fitness_threshold_stop(population:np.ndarray,fitness:np.ndarray,stopt:float=0.):
+    for i in fitness:
+        if i<stopt:
+            return True
+    return False
+
 
 def init_randuniform(population_size, individual_size, bounds):
     minimum = bounds[:,0]
