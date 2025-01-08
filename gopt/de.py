@@ -25,7 +25,7 @@ def apply_de(pop_eval: Callable,
              p_best:float=.11, #Only used if a probability wgt'd mutator is used. jitters between (0,.5] if None.
              seed:int=42_420_69_9001,
              stop_condition:Callable|float|None=None,
-             *eval_opts) -> tuple[A,A]:
+             eval_opts:Sequence=()) -> tuple[A,A]:
     """
     Applies the standard differential evolution algorithm.
     :param population_size: Size of the population.
@@ -82,7 +82,7 @@ def apply_de(pop_eval: Callable,
     else:
         pp = cmn.init_population(None,None, bounds, init_spec)
 
-    if isinstance(p_best,float): #Then also assume it's between 0 and 1
+    if isinstance(p_best,float): #Then also assume it's between 0 and 1 no user check... maybe should add if it causes memory leaks tho.
         p_best=ceil(pp.shape[0]*p_best)
 
     enf_bounds=enf_bounds and bounds
