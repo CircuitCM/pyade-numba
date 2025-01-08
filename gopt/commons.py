@@ -158,7 +158,7 @@ def make_bounds_costscalingarray(bounds:np.ndarray,p:float|np.ndarray=2.):
 def mk_fitness_thresh_stop(fitn:float=0.):
     if fitn is not None:
         #hopefully...
-        @nb.njit(inline='always')
+        @nb.njit(inline='always',cache=True) #hmmm
         def f(population,fitness):
             return fitness_threshold_stop(population,fitness,fitn)
         return f

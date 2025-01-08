@@ -11,22 +11,9 @@ from numba.core.extending import overload,register_jitable
 from math import ceil
 
 
-def get_default_params(dim: int) -> dict:
-    """
-    Returns the default parameters of the Differential Evolution Algorithm
-    :param dim: Size of the problem (or individual).
-    :type dim: int
-    :return: Dict with the default parameters of the Differential
-    Evolution Algorithm.
-    :rtype dict
-    """
-    return {'callback': None, 'max_evals': 10000 * dim, 'seed': None, 'cross': 'bin',
-            'f': 0.5, 'cr': 0.9, 'individual_size': dim, 'population_size': 10 * dim, 'opts': None}
-
-
 def apply_de(pop_eval: Callable,
              f: float=None, #If None jitters between .5 and 1.
-             cr: float=.7,
+             cr: float=.9, #Original CR value for differential evolution.
              init_spec: Callable | str | np.ndarray = 'sobol',  #If 'sobol', or 'rand' selects from uniform. Otherwise provide array or initializer.
              pop_dim: tuple|list|np.ndarray|None=None, #If None, then init_spec needs to be a callable or array of (pop_sz, individual_sz).
              bounds: A = None, #Required if you don't init your own population/supply a callable that uses pop and indiv size.
@@ -35,7 +22,7 @@ def apply_de(pop_eval: Callable,
              mutation_type:int=MutationSelector.CUR_T_PBEST,
              enf_bounds: bool = False, #Recommended to keep it False, and truncate parameters to boundaries in your pop_eval.
              reject_sample_max:int= None, #Must be >1 or None, If None then no rejection_sampling. Can reduce boundary bias, and increase meaningful search in valid boundaries for same # population evals.
-             p_best:int=.11, #Only used if a probability wgt'd mutator is used. jitters between (0,.5] if None.
+             p_best:float=.11, #Only used if a probability wgt'd mutator is used. jitters between (0,.5] if None.
              seed:int=42_420_69_9001,
              stop_condition:Callable|float|None=None,
              *eval_opts) -> tuple[A,A]:
@@ -96,7 +83,7 @@ def apply_de(pop_eval: Callable,
         pp = cmn.init_population(None,None, bounds, init_spec)
 
     if isinstance(p_best,float): #Then also assume it's between 0 and 1
-        p_best=ceil(pp.shape[0]/p_best)
+        p_best=ceil(pp.shape[0]*p_best)
 
     enf_bounds=enf_bounds and bounds
     gus=_ini_h(pp,False if not bounds or reject_sample_max is None else True)
