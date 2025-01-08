@@ -86,7 +86,7 @@ def apply_de(pop_eval: Callable,
         p_best=ceil(pp.shape[0]*p_best)
 
     enf_bounds=enf_bounds and bounds
-    gus=_ini_h(pp,False if not bounds or reject_sample_max is None else True)
+    gus=_ini_h(pp,False if bounds is None or reject_sample_max is None else True)
     max_iters=ceil(max_evals/pp.shape[0]) #a little more than max.
     crf=cmn.bin_mutate if cross_type == CrossoverSelector.BIN else None #implement later if needed
     stop_apply= cmn.mk_fitness_thresh_stop(stop_condition) if type(stop_condition) is float else stop_condition #leaving none or callable.
