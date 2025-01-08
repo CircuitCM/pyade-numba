@@ -102,13 +102,14 @@ def apply_de(pop_eval: Callable,
     gus=_ini_h(pp,False if not bounds or reject_sample_max is None else True)
     max_iters=ceil(max_evals/pp.shape[0]) #a little more than max.
     crf=cmn.bin_mutate if cross_type == CrossoverSelector.BIN else None #implement later if needed
+    stop_apply= cmn.mk_fitness_thresh_stop(stop_condition) if type(stop_condition) is float else stop_condition #leaving none or callable.
     match (mutation_type,cross_type):
         case MutationSelector.BINARY,_:
-            return _de_bin_mutate_bc(pp,bounds,enf_bounds,reject_sample_max,max_iters,f,cr,seed,crf,pop_eval,*gus,*eval_opts)
+            return _de_bin_mutate_bc(pp,bounds,enf_bounds,reject_sample_max,max_iters,f,cr,seed,crf,stop_apply,pop_eval,*gus,*eval_opts)
         case MutationSelector.CUR_T_BEST2, _:
-            return _de_c_t_best2_bc(pp, bounds, enf_bounds, reject_sample_max, max_iters, f, cr, seed, crf, pop_eval, *gus, *eval_opts)
+            return _de_c_t_best2_bc(pp, bounds, enf_bounds, reject_sample_max, max_iters, f, cr, seed, crf,stop_apply, pop_eval, *gus, *eval_opts)
         case MutationSelector.CUR_T_PBEST, _:
-            return _de_c_t_pbest_bc(pp, bounds, enf_bounds, reject_sample_max, max_iters, f, p_best, cr, seed, crf, pop_eval, *gus, *eval_opts)
+            return _de_c_t_pbest_bc(pp, bounds, enf_bounds, reject_sample_max, max_iters, f, p_best, cr, seed, crf,stop_apply, pop_eval, *gus, *eval_opts)
 
 
 def _ini_h(population:A,yes=True):

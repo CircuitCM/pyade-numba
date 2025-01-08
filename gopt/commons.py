@@ -55,6 +55,25 @@ def keep_bounds(population: np.ndarray,
         population[i, n] = min(max(population[i, n], bounds[n, 0]), bounds[n, 1])
     return population
 
+@nb.njit(**nb_cs())
+def keep_bounds_pl(population: np.ndarray,
+                bounds: np.ndarray) -> np.ndarray:
+    ps, pd = population.shape[0], population.shape[1]
+    for v in nb.prange(ps * pd):
+        i = v // pd
+        n = v % pd
+        #Past experience has demoed this to be faster than if elif.
+        population[i, n] = min(max(population[i, n], bounds[n, 0]), bounds[n, 1])
+    return population
+
+@nb.njit(**nb_pcs())
+def place_bounded_vec(search_vec: np.ndarray,
+                      param_vec:np.ndarray,
+                bounds: np.ndarray) -> np.ndarray:
+    for n in range(search_vec.shape[0]):
+        param_vec[n] = min(max(search_vec[n], bounds[n, 0]), bounds[n, 1])
+    return param_vec
+
 
 @nb.njit(**nb_pcs())
 def bounds_safe(p_vec: np.ndarray,bounds: np.ndarray):
@@ -70,18 +89,16 @@ def bounds_safe(p_vec: np.ndarray,bounds: np.ndarray):
     #more than others.
     return sb
 
-
-def _scaled_bc(pop_sclr,bound_vec,scale):
-    pass
-
+#Check which is quicker
+def _scaled_bc(n,pv,scale):pass
 @overload(_scaled_bc,inline='always')
-def _scaled_bc_(pop_sclr,bound_vec,scale):
+def _scaled_bc_(n,pv,scale):
     if isinstance(scale, types.NoneType):
-        def _impl(pop_sclr,bound_vec,scale): return abs(pop_sclr - min(max(pop_sclr, bound_vec[0]),  bound_vec[1]))
+        def _impl(n,pv,scale): return pv
     elif isinstance(scale, types.Number):
-        def _impl(pop_sclr, bound_vec, scale):return abs(pop_sclr - min(max(pop_sclr, bound_vec[0]), bound_vec[1]))*scale
-    else:
-        def _impl(pop_sclr,bound_vec,scale): return abs(pop_sclr - min(max(pop_sclr, bound_vec[0]),  bound_vec[1]))/(bound_vec[1]-bound_vec[0])
+        def _impl(n,pv, scale):return pv*scale
+    elif isinstance(scale, types.Array):
+        def _impl(n,pv, scale):return pv*scale[n]
     return _impl
 
 
@@ -98,7 +115,36 @@ def lnorm_bounds_cost(population: np.ndarray,
     for v in range(ps * pd):
         i = v // pd
         n = v % pd
-        bc[i] += _scaled_bc(population[i, n],bounds[n],scale)**norm
+        pv=abs(population[i,n] - min(max(population[i,n], bounds[n,0]),  bounds[n,1]))
+        #pv=max(0, bounds[n,0] - population[i,n]) + max(0, population[i,n] - bounds[n,1]) #see which is faster.
+        bc[i] += _scaled_bc(n,pv,scale)**norm
+    return bc
+
+
+@nb.njit(**nb_pcs())
+def place_bounded_vec_calccost(search_vec: np.ndarray,
+                               param_vec:np.ndarray,
+                               bounds: np.ndarray,
+                               #bc: np.ndarray,  # total cost for population member.
+                               scale: None | np.ndarray | float | Any = True,
+                               norm: float = 2.
+                               ):
+    """
+    Enforces bounds to parameter vector and calculates total bounds violation cost of vector like lnorm_bounds_cost, but for a vec.
+    :param search_vec:
+    :param param_vec:
+    :param bounds:
+    :param bc:
+    :param scale:
+    :param norm:
+    :return:
+    """
+    bc=0.
+    for n in range(search_vec.shape[0]):
+        sp=search_vec[n]
+        pp = min(max(sp, bounds[n, 0]), bounds[n, 1])
+        bc+=_scaled_bc(n,abs(pp-sp),scale)**norm
+        param_vec[n] = pp
     return bc
 
 def mk_fitness_thresh_stop(fitn:float=0.):
