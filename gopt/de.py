@@ -190,15 +190,15 @@ def _de_c_t_pbest_bc(population: A,
     return population[_b], _ftdiym[_b]
 
 
-#@nb.njit(**(cmn.nb_cs()|dict(inline=True))) #idk if necessary yet
-@nb.njit(inline='always')
+@nb.njit(**cmn.nb_pcs())
+#@nb.njit(inline='always')
 def _first(population,_ftdiym,seed,f,pop_eval,*eval_opts):
     rand.seed(seed) #Assuming it can handle None correctly?
     _ftdiym[:] = pop_eval(population, *eval_opts)  # fitness array sb embedded into eval_opts already. non _'d
     return _fset(f)
 
-#@nb.njit(**(cmn.nb_cs()|dict(inline=True)))
-@nb.njit(inline='always')
+@nb.njit(**cmn.nb_pcs())
+#@nb.njit(inline='always')
 def _the_rest(population,m_pop,_ftdiym,_idxs,f,pop_eval,*eval_opts):
     ftdiym = pop_eval(m_pop, *eval_opts)
     bdx=cmn.select_better(_ftdiym,ftdiym,_idxs)

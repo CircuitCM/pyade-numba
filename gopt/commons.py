@@ -83,9 +83,9 @@ def bounds_safe(p_vec: np.ndarray,bounds: np.ndarray):
             sb+=1
     #counts how many parameters are not within bounds, as there is no other preference for infeasibles besides falling within constraints.
     #Could also turn it into lnorm_bounds_cost but the intention is to maximize parameter search within the feasible set
-    #minimizing the # of search space scalars than need to be truncated to the boundary edges in the parameter space.
-    #bounds_safe count is the invariant metric comparison that should satisfy this when minimizing it.
-    #While this is used for rejection sampling the crossover rng is calculated only once to remove bias against searching some dimensions
+    #Which in turn minimizes the # of search space scalars than need to be truncated to the boundary edges in the parameter space.
+    #bounds_safe count is the invariant metric comparison that should satisfy this when minimized.
+    #While this is used for rejection sampling, the crossover rng is calculated only once to remove bias against searching some dimensions
     #more than others.
     return sb
 
@@ -108,7 +108,7 @@ def lnorm_bounds_cost(population: np.ndarray,
                       bc: np.ndarray, #total cost for population member.
                       scale:None|np.ndarray|float|Any=True,
                       norm:float=2.): #None is
-#Scale, None then unit distance, float then constant multiple, array dim dependent multiple, anything else defaults to 1/(diff bounds).
+#Scale, None then unit distance, float then constant multiple, array dim dependent multiple.
 #Recommended you provide a scaling array for each dimension, see examples. diff bounds will use redundant cpu cycles.
     ps, pd = population.shape[0], population.shape[1]
     bc[:]=0
@@ -119,7 +119,6 @@ def lnorm_bounds_cost(population: np.ndarray,
         #pv=max(0, bounds[n,0] - population[i,n]) + max(0, population[i,n] - bounds[n,1]) #see which is faster.
         bc[i] += _scaled_bc(n,pv,scale)**norm
     return bc
-
 
 @nb.njit(**nb_pcs())
 def place_bounded_vec_calccost(search_vec: np.ndarray,
@@ -147,11 +146,23 @@ def place_bounded_vec_calccost(search_vec: np.ndarray,
         param_vec[n] = pp
     return bc
 
+def make_bounds_costscalingarray(bounds:np.ndarray,p:float|np.ndarray=2.):
+    if isinstance(p,float):
+        scr=np.empty((bounds.shape[0],),dtype=np.float64)
+        scr[:]=p
+    else: scr=p
+    scr/=(bounds[:,1]-bounds[:,0])
+    return scr
+
+
 def mk_fitness_thresh_stop(fitn:float=0.):
-    @nb.njit(inline='always')
-    def f(population,fitness):
-        return fitness_threshold_stop(population,fitness,fitn)
-    return f
+    if fitn is not None:
+        #hopefully...
+        @nb.njit(inline='always')
+        def f(population,fitness):
+            return fitness_threshold_stop(population,fitness,fitn)
+        return f
+    return None
 
 @nb.njit(**nb_pcs())
 def fitness_threshold_stop(population:np.ndarray,fitness:np.ndarray,stopt:float=0.):
