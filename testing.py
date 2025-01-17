@@ -357,6 +357,7 @@ def uchoice_mutator(population: np.ndarray,
     #Then add a fitness discount to eval function. Or enable them in the search space in config. Though some optimizers like lshade-cnepsin don't respect them.
     #To get even more of a boost it might be worth sorting current vectors by proximity to boundaries and equally spreading that load.
     #As closer to boundary params will get more rejections.
+# uchoice_mutator(population, m_pop, cr, bounds, enf_bounds, reject_mx, cross_apply, mut_apply, _ns, _idx, _crossgen, _t_pop, *mut_args)
 
     _uchoice_loop(population, m_pop, bounds, reject_mx, cr, cross_apply, mut_apply, _ns, _idx, _crossgen, _t_pop, *mut_args)
     #print('Average # of failed resample dimensions per vector: ', rsmps.sum()/(pop_size*population.shape[1]))
@@ -647,7 +648,7 @@ if __name__=='__main__':
     np.set_printoptions(suppress=True)
 
     #old_run()
-    mutation_parallel_tradeoff_dim(10,50,24,80,80)
+    mutation_parallel_tradeoff_dim(10,50,8,80,80)
 
 
 def old_run():
@@ -680,11 +681,11 @@ def old_run():
     # print(_t_pop)
 
     # uchoice_mutator(p_, np_, bds, BIN_MUTATE_R, bin_mutate_bin_cross, ph,.5, .5, rand.randint(0, dim - 1))
-    uchoice_mutator(p_, np_, bds, pcfg.BIN_MUTATE_R, bin_mutate, ph, _t_pop, .5, .9, rand.randint(0, dim - 1))
+    uchoice_mutator(p_, np_, bds, pcfg._BIN_M_R, bin_mutate, ph, _t_pop, .5, .9, rand.randint(0, dim - 1))
 
     st = t.perf_counter()
     # uchoice_mutator(p_, np_, bds,BIN_MUTATE_R,bin_mutate_bin_cross, ph,.5, .5, rand.randint(0, dim - 1))
-    uchoice_mutator(p_, np_, bds, pcfg.BIN_MUTATE_R, bin_mutate, ph, _t_pop, .5, .9, rand.randint(0, dim - 1))
+    uchoice_mutator(p_, np_, bds, pcfg._BIN_M_R, bin_mutate, ph, _t_pop, .5, .9, rand.randint(0, dim - 1))
     print('one step time:', t.perf_counter() - st)
     # print('first bin resamp cross vecs\n', np_)
     # print('resamp diff\n', np_-p_)

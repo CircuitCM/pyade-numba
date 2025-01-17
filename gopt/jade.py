@@ -1,6 +1,9 @@
-import gopt.commons
+import gopt.commons as cmn
+import gopt.config as cfg
 import numpy as np
 from typing import Callable, Union, Dict, Any
+import numba as nb
+A=np.ndarray
 
 
 def get_default_params(dim: int) -> dict:
@@ -75,6 +78,8 @@ def apply(population_size: int, individual_size: int, bounds: np.ndarray,
 
     np.random.seed(seed)
 
+    #For later, a
+
     # 1. Init population
     population = gopt.commons.init_population(population_size, individual_size, bounds)
     u_cr = 0.5
@@ -107,3 +112,62 @@ def apply(population_size: int, individual_size: int, bounds: np.ndarray,
 
     best = np.argmin(fitness)
     return population[best], fitness[best]
+
+
+def _ini_h(population:A,yes=True):
+    nt=nb.get_num_threads()
+    m_pop=np.empty(population.shape,dtype=np.float64)
+    _crr = np.empty((nt,population.shape[1]),dtype=np.int64)
+    _t_pop=np.empty((nt,population.shape[1]),dtype=np.float64) if yes else None
+    _idx = np.empty((nt+1, population.shape[0]), dtype=np.int64)
+    _idx[:-1]= np.arange(0,population.shape[0])
+    _ftdiym=np.zeros((population.shape[0],), dtype=np.float64)
+    #_adegen = np.empty((nt, population.shape[1]), dtype=np.float64) if yes and anti_dim_degen else None
+    return m_pop,_idx[:-1],_crr,_t_pop,_ftdiym,_idx[-1],#_adegen
+
+#For mutation strategies you'll only use the pbests so shouldn't need separate functions tbh.
+@nb.njit(**cmn.nb_cs())
+def _jade_c_t_pbest_bc(population: A,
+                            bounds: A, enf_bounds:bool, #Enforce bounds
+                      reject_mx:int,
+                            max_iters:int,
+                            f_init: float, p:int|np.ndarray, cr_init: float, #if f==-1. then jitter along .5 1.
+                            f_bds: np.ndarray,
+                            cr_bds: np.ndarray,
+                            c:float, #adaption rate
+                            leh_order:float, #lehman mean order default 2 for contraharmonic. biases higher, which is good..
+                            seed: int,
+                            cross_apply: Callable,
+                            stop_apply: Callable,
+                            pop_eval: Callable,
+                            monitor:Callable,
+                            _m_pop:A,_idx:A,_crr:A,_t_pop:A,_ftdiym:A, _idxs:A,
+                            *eval_opts) -> tuple[A,A]:
+
+    #Think about making c decay quicker and randomization std larger based on frequency of new bests relative to total evals.
+    #But that would be your own separate algo.
+    u_cr = cr_init
+    u_f = f_init
+    cmn._rset(seed)
+    _ftdiym[:] = pop_eval(population, *eval_opts)  # fitness array sb embedded into eval_opts already. non _'d
+    _b = np.argsort(_ftdiym)
+    for current_generation in range(max_iters):
+        tp=cmn._pset(p)
+        #tp=pset(p,psz)
+        cmn.uchoice_mutator(population, _m_pop, cr, bounds, enf_bounds, reject_mx, cross_apply,
+                            cmn.c_to_pbest_mutate, cfg._C_T_PB_M_R,
+                            _idx, _crr, _t_pop, _b, tp, tf)
+        ftdiym = pop_eval(_m_pop, *eval_opts)
+        # To capture the most information, monitor comes right before new pop transition.
+        monitor(population, _m_pop, _ftdiym, *eval_opts)
+        bdx = cmn.select_better(_ftdiym, ftdiym, _idxs)
+        if len(bdx) != 0:
+            u_cr = (1 - c) * u_cr + c * np.mean(cr[indexes])
+            u_f = (1 - c) * u_f + c * (np.sum(f[indexes]**2) / np.sum(f[indexes]))
+        _ftdiym[bdx] = ftdiym[bdx]
+        population[bdx] = _m_pop[bdx]
+        tf=cmn._fset(f)
+        if stop_apply is not None and stop_apply(population,_ftdiym):break
+        _b = np.argsort(_ftdiym)
+    _b = np.argmin(_ftdiym)
+    return population[_b], _ftdiym[_b]
