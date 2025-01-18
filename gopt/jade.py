@@ -149,11 +149,14 @@ def _jade_c_t_pbest_bc(population: A,
     u_cr = cr_init
     u_f = f_init
     cmn._rset(seed)
-    _ftdiym[:] = pop_eval(population, *eval_opts)  # fitness array sb embedded into eval_opts already. non _'d
+    ftdiym=pop_eval(population, *eval_opts) #Now assuming that pop_eval will return a fitarray, I want maximum efficiency, ye.
+    _ftdiym[:] = ftdiym  # fitness array sb embedded into eval_opts already. non _'d
     _b = np.argsort(_ftdiym)
     for current_generation in range(max_iters):
         tp=cmn._pset(p)
-        #tp=pset(p,psz)
+        for i in range(population.shape[0]):
+            #cauchy, make separate func for this if used enough
+            cr_init
         cmn.uchoice_mutator(population, _m_pop, cr, bounds, enf_bounds, reject_mx, cross_apply,
                             cmn.c_to_pbest_mutate, cfg._C_T_PB_M_R,
                             _idx, _crr, _t_pop, _b, tp, tf)

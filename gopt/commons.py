@@ -2,7 +2,7 @@ import numpy as np
 import numba as nb
 from scipy.stats._qmc import Sobol
 import gopt.config as pcfg
-from math import ceil,floor,log,log2
+from math import ceil,floor,log,log2,log1p
 import random as rand
 from typing import Callable, Union, List, Tuple, Any
 from numba import njit, types
@@ -44,6 +44,19 @@ def _fset_(f):
         def _f(f): return f
     return _f
 
+def fastround_int(f):return int(round(f,0))
+@overload(fastround_int,inline='always',**nb_pcs())
+def fastround_int(f):
+    rh=f(.5) #HMMMMMM
+    print('Fastround int made half type:',type(rh),rh)
+    if isinstance(f,types.float64):
+        def _f(f): return nb.int64(f+.5)
+    elif isinstance(f,types.float32): #etc as needed
+        def _f(f): return nb.int32(f+nb.float32(.5))
+    else:
+        def _f(f):return int(f + rh) #pretty sure int always casts to int64 but see, maybe you can turn this into a map at compile time instead of elifs.
+    return _f
+
 def _pset(p):return rand.randrange(p[0], p[1]) if type(p) is np.ndarray else p
 @overload(_pset,inline='always',**nb_pcs())
 def _pset_(p):
@@ -62,6 +75,26 @@ def _meval_(m,*args):
     else:
         def _m(m,*args): pass
     return _m
+
+@rg(**nb_pcs())
+def knownfitness_fixedeval_hyperparam_logcost(evals,fitness,maxevals,minfit,maxfit):
+    if fitness<=minfit:
+        return log1p(evals)/log1p(maxevals) - 1
+    else: return log1p(fitness-minfit)/log1p(maxfit-minfit)
+    #The assumption is that as optimizer gets closer to beating the fitness, the rate of improvement will decrease roughly proportionally.
+    #if it worsens h-param tuning performance try linear version below.
+
+@rg(**nb_pcs())
+def knownfitness_fixedeval_hyperparam_lincost(evals,fitness,maxevals,minfit,maxfit):
+    if fitness<=minfit:
+        return (evals)/(maxevals) - 1
+    else: return (fitness-minfit)/(maxfit-minfit) # or maybe keeps evals as a log rate idk for sure.
+
+@rg(**nb_pcs())
+def count_monitor(mute_pop:np.ndarray,ct_arr:np.ndarray):
+    #An example, args should be altered for different optimizers.
+    ct_arr[0]+=mute_pop.shape[0]
+    ct_arr[1]+=1
 
 
 @nb.njit(**nb_pcs())
@@ -207,7 +240,7 @@ def fitness_threshold_stop(population:np.ndarray,fitness:np.ndarray,stopt:float=
 
 #Add coordinate based pop stopper.
 
-
+@rg(**nb_cs())
 def init_randuniform(population_size, individual_size, bounds)-> np.ndarray:
     minimum = bounds[:,0]
     maximum = bounds[:,1]
