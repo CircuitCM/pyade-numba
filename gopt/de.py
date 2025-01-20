@@ -2,7 +2,7 @@ import random as rand
 import numpy as np
 import gopt.commons as cmn
 import gopt.config as cfg
-from gopt.config import CrossoverSelector,MutationSelector
+from gopt.config import CrossoverSelector,MutationSelector,CallStrategy
 from typing import Callable, Union, Dict, Any,Sequence
 A=np.ndarray
 import numba as nb
@@ -30,8 +30,8 @@ def apply_de(pop_eval: Callable,
              stop_condition:Callable|float|None=None,
              monitor_func:Callable|None=None,
              eval_opts:Sequence=(),
-             make_callable:bool|str=False #False, True, 'for_jitting'
-             ) -> tuple[A | None, A | None] | Callable:
+             call_strategy:int=CallStrategy.RUN,
+             ) -> tuple[A | None, A | None] | Callable|tuple[Callable,Callable,tuple]:
     """
     Applies the standard differential evolution algorithm.
     :param population_size: Size of the population.
@@ -64,22 +64,8 @@ def apply_de(pop_eval: Callable,
     :rtype [A, int]
     """
 
-    # if (type(f) is not int and type(f) is not float) or not 0 <= f <= 2:
-    #     raise ValueError("f (mutation parameter) must be a "
-    #                      "real number in [0,2].")
-
-    # if (type(cr) is not int and type(cr) is not float) or not 0 <= cr <= 1:
-    #     raise ValueError("cr (crossover ratio) must be a "
-    #                      "real number in [0,1].")
-
     if type(max_evals) is not int or max_evals <= 0:
         raise ValueError("max_evals must be a positive integer.")
-
-    #bounds can also be none, but init population.
-    # if type(bounds) is not A or bounds.shape != (individual_size, 2):
-    #     raise ValueError("bounds must be a NumPy ndarray.\n"
-    #                      "The array must be of individual_size length. "
-    #                      "Each row must have 2 elements.")
 
     if type(seed) is not int and seed is not None:
         raise ValueError("seed must be an integer or None.")
@@ -91,17 +77,16 @@ def apply_de(pop_eval: Callable,
     pop_dim=np.array(pp.shape,dtype=np.int64) # be safe
 
     stack_mem=init_algo_stack(pp, False if bounds is None or reject_sample_max is None else True)
-    max_iters=ceil(max_evals/pp.shape[0]) #a little more than max.
     crf=cmn.bin_cross_init if cross_type == CrossoverSelector.BIN else None #implement later if needed
     stop_apply= cmn.mk_fitness_thresh_stop(stop_condition) if type(stop_condition) is float else stop_condition #leaving none or callable.
     if mutation_type in _MUT_IMP:
-        if make_callable:
+        if call_strategy>0: #0 is CallStrategy.RUN
             #Notes to not have errors: fitness outputs should depend solely on the eval function, all eval opts for pop_eval and monitor
             #need to be managed/cleared by the user after one call, if they retain information of the run.
             print('Return callable selected, attempting jit compilation.\nRequesting a numba compiled callable object may occur in separate python threads to handle many fitness functions.\nHowever optimizers will take advantage of all CPU threads without releasing the GIL to avoid memory inconsistencies in numpy arrays.\nThis means there will be no benefit to running optimizer callables in separate python threads, performance will be best when run sequentially.')
             failed_jit=False
             #get it to compile first
-            if make_callable!='for_jitting':
+            if call_strategy==CallStrategy.OBJ_JIT:
                 try:
                     run_de(mutation_type,pp, bounds, reject_sample_max, 2, f, p_best, cr, seed, crf,stop_apply, pop_eval,monitor_func, *stack_mem, *eval_opts)
                     print('Optimizer successfully compiled.')
@@ -110,50 +95,64 @@ def apply_de(pop_eval: Callable,
                     print(f"\n---WARNING;\nFailed to compile callable in nopython mode: {e}\n Attempting python for eval, monitor, and stop functions.")
                     run_de_nocompile(mutation_type,pp, bounds, reject_sample_max, 2, f, p_best, cr, seed, crf,stop_apply, pop_eval,monitor_func, *stack_mem, *eval_opts)
                 _run=run_de_nocompile if failed_jit else run_de
-                # user is expected to know that changing the types of new callable parameters will cause a new compile. in _run at the least
-                #tunable params are: n_f[0,1],n_cr[0,1],n_cr[0,1],n_pop_dim[0].
-                #User can optimize params using this if they don't care about the jit.
-                def run(n_f: float = None, n_cr: float = None, n_init_spec: Callable | str | np.ndarray = None,
-                        n_pop_dim: np.ndarray | None = None, n_bounds: A = None, n_max_evals: int = None,
-                        n_reject_sample_max: int = None, n_p_best: float | None = None, n_seed: int = None):
-                    n_f = f if n_f is None else n_f
-                    n_cr = cr if n_cr is None else n_cr
-                    n_init_spec = init_spec if n_init_spec is None else n_init_spec
-                    n_pop_dim = pop_dim if n_pop_dim is None else n_pop_dim
-                    n_bounds = bounds if n_bounds is None else n_bounds
-                    n_p_best = p_best if n_p_best is None else n_p_best
-                    n_seed = seed if n_seed is None else n_seed
-                    # print(n_f, n_cr, n_init_spec, n_pop_dim, n_bounds, mutation_type, n_p_best)
-                    n_pp = _ini_spc(n_init_spec, n_pop_dim, n_bounds)
-
-                    i0 = n_pop_dim[0] != pop_dim[0]
-                    i1 = n_pop_dim[1] != pop_dim[1]
-                    n_max_iters = max_iters if n_max_evals is None else ceil(n_max_evals / n_pp.shape[0])
-                    n_reject_sample_max = reject_sample_max if n_reject_sample_max is None else n_reject_sample_max
-                    n_gus = stack_mem
-                    if i0 or i1:
-                        n_gus = init_algo_stack(n_pp, False if bounds is None or reject_sample_max is None else True)
-
-                    return _run(mutation_type, n_pp, n_bounds, n_reject_sample_max, n_max_iters, n_f, n_p_best, n_cr,
-                                n_seed, crf, stop_apply, pop_eval, monitor_func, *n_gus, *eval_opts)
-                return run  # Now it should be callable from a jit function if it compiled successfully, however calling from jit func will trigger second compile.
+            elif call_strategy==CallStrategy.OBJ:
+                iscomp=[-1]
+                def _run(*args):
+                    if iscomp[0]==-1:
+                        try:
+                            run_de(*args)
+                            print('Optimizer successfully compiled. New calls to this object will no longer have a delay.')
+                            iscomp[0]=True
+                        except Exception as e:
+                            print(f"\n---WARNING;\nFailed to compile callable in nopython mode: {e}\n Attempting python for eval, monitor, and stop functions.")
+                            run_de_nocompile(*args)
+                            iscomp[0] = False
+                    elif iscomp[0]: run_de(*args)
+                    else: run_de_nocompile(*args)
             else:
                 #advanced, user should know what they are doing
-                ap=[mutation_type,pp, bounds, reject_sample_max, max_iters, f, p_best, cr, seed, crf,stop_apply, pop_eval,monitor_func]
+                ap=[mutation_type,pp, bounds, reject_sample_max, max_evals, f, p_best, cr, seed, crf,stop_apply, pop_eval,monitor_func]
                 ap.extend(stack_mem) #included
                 #ap.append(eval_opts) #unecessary as the user should already have this
-                return run_de,ap
+                return run_de,run_de_nocompile,ap
+            # user is expected to know that changing the types of new callable parameters will cause a new compile. in _run at the least
+            # tunable params are: n_f[0,1],n_cr[0,1],n_cr[0,1],n_pop_dim[0].
+            # User can optimize params using this if they don't care about the jit.
+            def run(n_f: float = None, n_cr: float = None, n_init_spec: Callable | str | np.ndarray = None,
+                    n_pop_dim: np.ndarray | None = None, n_bounds: A = None, n_max_evals: int = None,
+                    n_reject_sample_max: int = None, n_p_best: float | None = None, n_seed: int = None):
+                n_f = f if n_f is None else n_f
+                n_cr = cr if n_cr is None else n_cr
+                n_init_spec = init_spec if n_init_spec is None else n_init_spec
+                n_pop_dim = pop_dim if n_pop_dim is None else n_pop_dim
+                n_bounds = bounds if n_bounds is None else n_bounds
+                n_p_best = p_best if n_p_best is None else n_p_best
+                n_seed = seed if n_seed is None else n_seed
+                # print(n_f, n_cr, n_init_spec, n_pop_dim, n_bounds, mutation_type, n_p_best)
+                n_pp = _ini_spc(n_init_spec, n_pop_dim, n_bounds)
+
+                i0 = n_pop_dim[0] != pop_dim[0]
+                i1 = n_pop_dim[1] != pop_dim[1]
+                n_max_iters = n_max_evals if n_max_evals is None else max_evals
+                n_reject_sample_max = reject_sample_max if n_reject_sample_max is None else n_reject_sample_max
+                n_gus = stack_mem
+                if i0 or i1:
+                    n_gus = init_algo_stack(n_pp, False if bounds is None or reject_sample_max is None else True)
+
+                return _run(mutation_type, n_pp, n_bounds, n_reject_sample_max, n_max_iters, n_f, n_p_best, n_cr,
+                            n_seed, crf, stop_apply, pop_eval, monitor_func, *n_gus, *eval_opts)
+            return run  # Now it should be callable from a jit function if it compiled successfully, however calling from jit func will trigger second compile.
         else:
             try:
-                return run_de(mutation_type,pp, bounds, reject_sample_max, max_iters, f, p_best, cr, seed, crf,stop_apply, pop_eval,monitor_func, *stack_mem, *eval_opts)
+                return run_de(mutation_type,pp, bounds, reject_sample_max, max_evals, f, p_best, cr, seed, crf,stop_apply, pop_eval,monitor_func, *stack_mem, *eval_opts)
             except Exception as e:
                 print(f"Failed to run in nopython mode: {e}\n Attempting python for eval, monitor, and stop functions.")
-                return run_de_nocompile(mutation_type,pp, bounds, reject_sample_max, max_iters, f, p_best, cr, seed, crf,stop_apply, pop_eval,monitor_func, *stack_mem, *eval_opts)
+                return run_de_nocompile(mutation_type,pp, bounds, reject_sample_max, max_evals, f, p_best, cr, seed, crf,stop_apply, pop_eval,monitor_func, *stack_mem, *eval_opts)
     else:
         print('Specified mutation strategy is not implemented for this optimizer. Please select an available strategy.')
         return None,None
 
-@register_jitable(inline=True,**cmn.nb_pcs())
+@register_jitable(**cmn.nb_pcs())
 def init_algo_stack(population:A, yes=True):
     nt=nb.get_num_threads()
     m_pop=np.empty(population.shape,dtype=np.float64)
@@ -162,14 +161,14 @@ def init_algo_stack(population:A, yes=True):
     return m_pop,_idx[:-1],_crr,_t_pop,_ftdiym,_idx[-1],#_adegen
 
 
-@register_jitable(inline=True,**cmn.nb_pcs())
+@register_jitable(**cmn.nb_pcs())
 def init_parameter_stack(nt, pop_dim, yes=True):
     _crr = np.empty((nt,pop_dim),dtype=np.int64)
     _t_pop=np.empty((nt,pop_dim),dtype=np.float64) if yes else None
     return _crr,_t_pop
 
 
-@register_jitable(inline=True,**cmn.nb_pcs())
+@register_jitable(**cmn.nb_pcs())
 def init_population_stack(nt, pop_size):
     _idx = np.empty((nt + 1, pop_size), dtype=np.int64)
     _idx[:-1] = np.arange(0, pop_size)
@@ -177,27 +176,7 @@ def init_population_stack(nt, pop_size):
     #_ftdiym[:]=0. #if there is dependence on prev fit values, then zero init is necessary
     return _idx,_ftdiym
 
-
-def _ini_spc(init_spec,pop_dim,bounds):
-    if type(init_spec)==np.ndarray:
-        p=init_spec
-        pop_dim[0],pop_dim[1]=p.shape[0],p.shape[1]
-    else:
-        p = cmn.init_randuniform(pop_dim[0], pop_dim[1], bounds[:pop_dim[1]])
-    return p
-
-@overload(_ini_spc,**cmn.nb_cs())
-def _ini_spc_(init_spec,pop_dim,bounds):
-    if isinstance(init_spec,types.Array):
-        def _i(init_spec,pop_dim,bounds):
-            p = init_spec
-            pop_dim[0], pop_dim[1] = p.shape[0], p.shape[1]
-            return p
-    else:
-        _i= lambda init_spec,pop_dim,bounds: cmn.init_randuniform(pop_dim[0], pop_dim[1], bounds[:pop_dim[1]])
-    return _i
-
-
+#add this as callable object check, tho maybe leave as constant values will be faster than an rng that returns the same value.
 def _ini_non_compiled_settings(f: float=None, #If None jitters between .5 and 1.
                                 cr: float=.9,
                                 init_spec: Callable | str | np.ndarray = 'sobol',
@@ -214,7 +193,7 @@ def _ini_non_compiled_settings(f: float=None, #If None jitters between .5 and 1.
         pp = cmn.init_population(None, None, bounds, init_spec)
 
     # to avoid recompilations for different jitter params, use numpy arrays instead of tuples (though they are still going to happen with different eval, stop and monitor funcs).
-    #probably change so that the configs become a 2 element array with the same values later.
+    #probably change so that the configs become a 2 element array with the same values, instead of multiple implementations..
     if mutation_type in _PB_IMP:
         if isinstance(p_best,
                       float):  # Then also assume it's between 0 and 1 no user check... maybe should add if it causes memory leaks instead of crashing though.
@@ -240,12 +219,12 @@ def _ini_non_compiled_settings(f: float=None, #If None jitters between .5 and 1.
     return pp,f,cr,p_best
 
 #---- DE SETTINGS OPTIMIZATION UTILS
-#tldr; optimize DE settings for a specific class of problems using DE itself.
+#tldr; optimize DE settings for a specific class of problems, using DE itself.
 #While it's great to have a strong general optimization algorithm, it's possible to get much better performance on specific problems
 #by providing optimal hyperparameters to the optimizer. For example let's say you have a large model with many parameters, and
 #your dataset is also large such that a single evaluation now takes a long time. You might be able to select 1/100th or even 1/1000th
 #of that dataset to teach the optimizer the model's parameter structure through it's tunable hyperparameters. This may increase the
-#DE optimizers performance by an order of magnitude.
+#DE optimizers convergence by an order of magnitude.
 @register_jitable(**cmn.nb_pcs())
 def default_settings_bounds(min_pop=4,max_pop=128):
     br=np.empty((7,2),dtype=np.float64)
@@ -258,9 +237,9 @@ def default_settings_bounds(min_pop=4,max_pop=128):
     br[6] = min_pop, max_pop
     return br
 
-
-@nb.njit(**cmn.nb_pcs()) #may barely be worth setting as njit
-def vec_to_settings_cost(search_vec,bounds,f:np.ndarray,cr:np.ndarray,p_b:np.ndarray,pop_dim:np.ndarray):
+#find a way to support dynamic things eventually.
+@register_jitable(**cmn.nb_pcs()) #may barely be worth setting as njit
+def vec_to_settings_cost(search_vec,bounds,f:np.ndarray,cr:np.ndarray,p_b:np.ndarray):
     """Places all search scalars into the tunable settings of DE, handling the constraints.
     Also returns the L1 constraint violation cost."""
     sv=search_vec
@@ -274,12 +253,12 @@ def vec_to_settings_cost(search_vec,bounds,f:np.ndarray,cr:np.ndarray,p_b:np.nda
     pd=min(max(bounds[6,0], sv[6]), bounds[6,1]) #pop_dim
     cstc += abs(sv[6]-pd)
     pmi=cmn.fastround_int(pd)
-    p_b[0],p_b[1]=min(ceil(pb0*pd),pmi),min(ceil(pb1*pd),pmi)
-    pop_dim[0]=pmi
+    #print(pb0,pb1)
+    p_b[0],p_b[1]=max(min(ceil(pb0*pd),pmi)-1,1),max(min(ceil(pb1*pd),pmi),2)
     cstc/=(7.**.5) #technically there are 10 edges, but I think this makes sense.
     return cstc,pmi
 
-@register_jitable(inline=True,**cmn.nb_pcs())
+@register_jitable(**cmn.nb_pcs())
 def _hw_cost(bn0,bx0,bn1,bx1,s0,s1): #hw -> halfway cost
     cstc=0.
     bp0 = min(max(bn0, s0), bx0)
@@ -299,7 +278,7 @@ def get_tunable_settings(*all_opts): #REMEMBER to update if you add new things.
     """Returns (pop_arr, bounds, f, b_pest, cr)
     Positions within args: (1, 2, 5, 6, 7)
     Fitness constraint bounds aren't tunable, but could be randomized to some extent to increase robustness of tuning.
-    Population isn't tunable directly but it's size is, so in case the user needs to see the size
+    Population isn't tunable directly but it's size is, so in case the user needs to see the size, will return the population array.
     """
     #pop_arr unneeded as I'll store placeholder stack for max popsize, but including separately if other users want it.
     #If there are enough mutation types in the future you could add it
@@ -307,26 +286,27 @@ def get_tunable_settings(*all_opts): #REMEMBER to update if you add new things.
     return al[1],al[2],al[5],al[6],al[7]
 
 @register_jitable(**cmn.nb_pcs())
-def fix_pop_stack(n_pop,*all_opts):
+def fix_pop_stack(n_pop,*all_opts): #basically redundant now, leaving in case things change.
     """all_opts sb the original with max pop_size. Receives new pop and opts and fixes DE stack."""
     al=all_opts
     #These settings will all be inited assuming max pop_size
-    #idxs: pop 1, 14 _idx, 17 ftdiym, 18 _idxs
-    nsz=n_pop.shape[0]
-    ndx=al[14][:,:nsz]
-    ftd =al[17][:nsz]
-    ndxs = al[18][:nsz]
-    return al[0],n_pop,*al[2:14],ndx,*al[15:17],ftd,ndxs,*al[19:]
+    #idxs: pop 1, mpop 13, 14 _idx, 17 ftdiym, 18 _idxs, will be check first in run_de for convenience.
+    #nsz=n_pop.shape[0]
+    # mpop=al[13][:nsz]
+    # ndx=al[14][:,:nsz]
+    # ftd =al[17][:nsz]
+    # ndxs = al[18][:nsz]
+    return al[0],n_pop,*al[2:]
 
 
 
 #--- DE IMPLEMENTATIONS
 
-@nb.njit(**cmn.nb_cs())
+@nb.njit(**cmn.nb_pcs())
 def run_de(mutation_selector:int,population: A,
                             bounds: A,
                             reject_mx:int,
-                            max_iters:int,
+                            max_evals:int,
                             f: float|np.ndarray, p:int|np.ndarray, cr: float|np.ndarray,
                             seed: int,
                             cross_apply: Callable,
@@ -339,7 +319,7 @@ def run_de(mutation_selector:int,population: A,
     return run_de_nocompile(mutation_selector,population,
                             bounds,
                             reject_mx,
-                            max_iters,
+                            max_evals,
                             f, p, cr,
                             seed,
                             cross_apply,
@@ -349,11 +329,11 @@ def run_de(mutation_selector:int,population: A,
                             _m_pop,_idx,_crr,_t_pop,_ftdiym, _idxs,
                             *eval_opts)
 
-@register_jitable(**cmn.nb_cs())
+@register_jitable(**cmn.nb_pcs())
 def run_de_nocompile(mutation_selector:int,population: A,
                             bounds: A,
                             reject_mx:int,
-                            max_iters:int,
+                            max_evals:int,
                             f: float|np.ndarray, p:int|np.ndarray, cr: float|np.ndarray,
                             seed: int,
                             cross_apply: Callable,
@@ -362,6 +342,15 @@ def run_de_nocompile(mutation_selector:int,population: A,
                             monitor:Callable,
                             _m_pop:A,_idx:A,_crr:A,_t_pop:A,_ftdiym:A, _idxs:A,
                             *eval_opts):
+    #It's easier to fix these here when it becomes jitted as part of a larger routine.
+    #assume all assigned arrays will have a capacities equal to or larger than population.shape
+    ps,pd=population.shape
+    max_iters=ceil(max_evals/ps)
+    _m_pop=_m_pop[:ps,:pd]
+    _idx=_idx[:,:ps]
+    _t_pop=_ftpop(pd,_t_pop)
+    _ftdiym=_ftdiym[:ps]
+    _idxs=_idxs[:ps]
     #Match case is now implemented in numba so make sure to use the new version.
     match (mutation_selector):
         case cfg._M_BINARY:
@@ -375,7 +364,7 @@ def run_de_nocompile(mutation_selector:int,population: A,
     _b = np.argmin(_ftdiym)
     return population[_b], _ftdiym[_b]
 
-@register_jitable(**cmn.nb_cs())
+@register_jitable(**cmn.nb_pcs())
 def _de_bin_mutate_bc(population: A,
                             bounds: A,
                             reject_mx:int,
@@ -394,7 +383,7 @@ def _de_bin_mutate_bc(population: A,
         tf,tcr=_the_rest(population,_m_pop,_ftdiym,_idxs,f,cr,pop_eval,monitor,*eval_opts)
         if stop_apply is not None and stop_apply(population,_ftdiym):break
 
-@register_jitable(**cmn.nb_cs())
+@register_jitable(**cmn.nb_pcs())
 def _de_c_t_pbest_bc(population: A,
                             bounds: A,
                             reject_mx:int,
@@ -417,7 +406,7 @@ def _de_c_t_pbest_bc(population: A,
         if stop_apply is not None and stop_apply(population,_ftdiym):break
         _b = np.argsort(_ftdiym)
 
-#Implement pbest2, pbesta, pbest2a later.
+#Implement pbest2, pbesta, pbest2a later. Also maybe pbestd[n] and pbestd[n]a and 2s cr's maybe
 
 @register_jitable(**cmn.nb_pcs())
 def _first(population,_ftdiym,seed,f,cr,pop_eval,*eval_opts):
@@ -430,11 +419,21 @@ def _the_rest(population,m_pop,_ftdiym,_idxs,f,cr,pop_eval,monitor,*eval_opts):
     ftdiym = pop_eval(m_pop, *eval_opts)
     #To capture the most information, monitor comes right before new pop transition.
     _meval(monitor,population,m_pop,_ftdiym,*eval_opts)
+    #print(_ftdiym, ftdiym, _idxs)
     bdx = cmn.select_better(_ftdiym, ftdiym, _idxs)
     _ftdiym[bdx]=ftdiym[bdx]
     population[bdx]=m_pop[bdx]
     return _fset(f),_fset(cr)
 
+
+def _ftpop(op,tp):return tp if tp is None else tp[:,:op]
+@overload(_ftpop,**cmn.nb_pcs())
+def _ftpop_(op,tp):
+    if isinstance(tp,types.NoneType):
+        def _p(op,tp): return tp[:,:op]
+    else:
+        def _p(op,tp): return None #or pass
+    return _p
 
 @nb.njit(**cmn.nb_pcs())
 def _ss(f): rand.seed(f)
@@ -443,7 +442,7 @@ def _rset(seed):
     if seed is not None:
         _ss(seed)
         rand.seed(seed)
-@overload(_rset,inline='always',**cmn.nb_pcs())
+@overload(_rset,**cmn.nb_pcs())
 def _rset_(f):
     if isinstance(f,types.NoneType):
         def _f(f): pass
@@ -453,7 +452,7 @@ def _rset_(f):
 
 #can be used for CR too
 def _fset(f):return rand.uniform(f[0], f[1]) if type(f) is np.ndarray else f
-@overload(_fset,inline='always',**cmn.nb_pcs())
+@overload(_fset,**cmn.nb_pcs())
 def _fset_(f):
     if isinstance(f,types.Array):
         def _f(f): return rand.uniform(f[0], f[1])
@@ -462,7 +461,7 @@ def _fset_(f):
     return _f
 
 def _pset(p):return rand.randrange(p[0], p[1]) if type(p) is np.ndarray else p
-@overload(_pset,inline='always',**cmn.nb_pcs())
+@overload(_pset,**cmn.nb_pcs())
 def _pset_(p):
     if isinstance(p,types.Array):
         def _p(p): return rand.randrange(p[0], p[1]) #jitter p for pbest selection by per generation.
@@ -472,7 +471,7 @@ def _pset_(p):
 
 def _meval(m,*args):
     if m is not None:m(*args)
-@overload(_meval,**cmn.nb_cs()) #allowing parallel tho idk what it could end up doing to it if monitor isn't.
+@overload(_meval,**cmn.nb_pcs()) #allowing parallel tho idk what it could end up doing to it if monitor isn't. Nothing, the monitor func can be parallel.
 def _meval_(m,*args):
     if isinstance(m,types.Callable):
         def _m(m,*args): m(*args)

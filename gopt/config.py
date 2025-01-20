@@ -10,6 +10,72 @@
 # Rejection sampling example for 50 dims: min(100,max(2,ceil(.2*(50**1.5))))=71
 #By default search space does not have boundaries for better search crossover results between generations.
 
+from numba.core.cpu_options import ParallelOptions
+import numba as nb
+from numba.core.extending import register_jitable,overload
+
+#An extremely hacky method I made to get numba to disable/re-enable parallel dispatch mid-IR processing. This is useful for eg:
+#Optimizing the settings/hyperparameters of a DE compiled optimizer pipeline, so that you can run multiple optimizations in parallel each with a low
+#population count, instead of less efficiently utilizing parallel recourses and launching more vthreads than there are real threads.
+class DBool: #Boolean singleton
+    def __init__(self,iv):
+        self.v=iv
+
+    def __bool__(self):
+        return self.v
+
+    def __repr__(self):
+        return f'{self.v}'
+
+class NBPopts(ParallelOptions): #hacked parallel options, needed to get the bool singleton past the type check.
+
+    def __init__(self,value:DBool):
+        self.enabled = value
+        self.comprehension = value
+        self.reduction = value
+        self.inplace_binop = value
+        self.setitem = value
+        self.numpy = value
+        self.stencil = value
+        self.fusion = value
+        self.prange = value
+
+parallel_enabled=True #to enable/disable explicit parallel branches. eg you have something that uses thread_ids instead of just implicit concurrency.
+parallel_dec_toggle=NBPopts(DBool(True))
+nc_t= nb.njit(lambda:None) #When replaced with a new registered lambda and added as an unused argument to an njit function, it will force a recompilation for that section of the IR chain, maybe.
+_dft=dict(fastmath=True, error_model='numpy',cache=True) #numba should sense changes to globals so cache shouldn't interfere
+jit_s=_dft|dict(parallel=False) #jit sync only settings. Sync Dispatchers can still call parallel jit funcs, fyi.
+jit_tp=_dft|dict(parallel=parallel_dec_toggle) #jit toggle parallel settings.
+jit_ap=_dft|dict(parallel=True) #jit always parallel settings.
+
+def disable_optional_parallelism():
+    global parallel_enabled,parallel_dec_toggle,nc_t
+    if parallel_enabled:
+        parallel_enabled=False
+        parallel_dec_toggle.enabled.v=False
+        nc_t =  nb.njit(lambda: None)
+
+def enable_optional_parallelism():
+    global parallel_enabled,parallel_dec_toggle,nc_t
+    if not parallel_enabled:
+        parallel_enabled=True
+        parallel_dec_toggle.enabled.v=True
+        nc_t =  nb.njit(lambda: None)
+
+#unfortunately doesn't work, can only toggle outside of IR processing eg before the first call that triggers a compilation, then after.
+@overload(disable_optional_parallelism, inline='always')
+def _dispb():
+    disable_optional_parallelism()
+    return None
+
+@overload(enable_optional_parallelism, inline='always')
+def _enpb():
+    enable_optional_parallelism()
+    return None
+
+
+
+
 #private module vars for comparisons in jitted functions.
 _M_BINARY=0
 _M_CUR_T_BEST2=1
@@ -35,6 +101,13 @@ class MutationSelector:
 class CrossoverSelector:
     BIN = 0 #only bin is available for now.
     EXP = 1
+
+class CallStrategy:
+    RUN=0 #will simply try to run, such that apply_de is the executor. Will first attempt nopython compilation, will fallback to python mode.
+    OBJ=1 #will return a runnable python object with all parameters that wouldn't necessarily need a recompilation if changed.
+    OBJ_JIT=2 #Same as OBJ but briefly runs it first for two generations to trigger a compilation, if your fitness function takes forever to evaluate then use previous mode.
+    RAW=3 #For advanced users to construct their own jitted routines. The raw implementations and args
+
 
 #DEPRICATED, experiment with later.
 #Sub policies for best-of-n resampling, performed before fitness function eval. As it's a randomized rejection sampling method it can be used
