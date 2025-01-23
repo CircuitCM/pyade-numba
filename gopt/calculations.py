@@ -1,9 +1,20 @@
 import numba as nb
 import gopt.commons as cmn
+import gopt.config as cfg
 from math import ceil,log2
+from numba.misc.quicksort import make_jit_quicksort
+
+qq=make_jit_quicksort(is_np_array=True)
+qq.compile(nb.njit(**cfg.jit_s)) #idk how, but timing this makes the compile speed seem basically instant, and its a large function underneath...
+quicksort_array=qq.run_quicksort
 
 
-@nb.njit(**cmn.nb_pcs())
+# @nb.njit(**cfg.jit_s)
+# def quicksort_array(A):
+#     return qs(A)
+
+
+@nb.njit(**cfg.jit_s)
 def binary_func_search(lb,ub,max_iter,eval_func,*eval_opts):
     low_lam, high_lam = lb, ub
     mid=0.
@@ -26,7 +37,7 @@ def binary_func_search(lb,ub,max_iter,eval_func,*eval_opts):
         ls=s
     return mid
 
-@nb.njit(**cmn.nb_cs())
+@nb.njit(**cfg.jit_ap)
 def power_fixedpop_evalmatch(coef,pop_size,generations,eval_target,power=3.):
     finsum=nb.int64(0)
     jp=generations**power #((i**power)/jp) to preserve significant digits
@@ -35,7 +46,7 @@ def power_fixedpop_evalmatch(coef,pop_size,generations,eval_target,power=3.):
     return finsum-eval_target
 
 
-@nb.njit(cache=False,**cmn.nb_pcs())
+@nb.njit(**cfg.jit_s)
 def bestfit_powerresample_coeff(pop_size,generations,eval_target,power=3.): #assume its at least >1.
     """When coef returned: ceil(coef*(current_generation**power)/(f_gen**power)) is the # of times you want to resample your stochastic fitness function.
     Use this format to preserve significant digits which might be important for the rounding."""

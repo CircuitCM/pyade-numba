@@ -1,32 +1,38 @@
 import numpy as np
 import numba as nb
 from scipy.stats._qmc import Sobol
-import gopt.config as pcfg
+import gopt.config as cfg
 from math import ceil,floor,log,log2,log1p
 import random as rand
 from typing import Callable, Union, List, Tuple, Any
 from numba import njit, types
-from numba.core.extending import overload,register_jitable as rg
+from numba.core.extending import overload, register_jitable as rg, register_jitable
+
 
 #extra common overload stuff
-
-def _ftpop(op,tp):return tp if tp is None else tp[:,:op]
-@overload(_ftpop,**pcfg.jit_s)
-def _ftpop_(op,tp):
-    if isinstance(tp,types.NoneType):
-        def _p(op,tp): return tp[:,:op]
+def _ftpop(op,tp,i):return tp if tp is None else tp[i,:op].reshape((1,op)) if type(i) is int else tp[:,:op]
+@overload(_ftpop,**cfg.jit_s)
+def _ftpop_(op,tp,i):
+    if isinstance(tp,types.Array):
+        if isinstance(i,types.Integer):
+            def _p(op,tp,i): return tp[i,:op].reshape((1,op))
+        else:
+            def _p(op, tp,i):return tp[:, :op]
     else:
-        def _p(op,tp): return None #or pass
+        def _p(op,tp,i): pass
     return _p
 
-@nb.njit(**pcfg.jit_s)
-def _ss(f): rand.seed(f)
+@nb.njit(**cfg.jit_s)
+def _ss(f):
+    rand.seed(f)
+    np.random.seed(f)
 
-def _rset(seed):
+def set_seed(seed):
     if seed is not None:
         _ss(seed)
         rand.seed(seed)
-@overload(_rset,**pcfg.jit_s)
+        np.random.seed(seed)
+@overload(set_seed,**cfg.jit_s,inline='always')
 def _rset_(f):
     if isinstance(f,types.NoneType):
         def _f(f): pass
@@ -36,7 +42,7 @@ def _rset_(f):
 
 #can be used for CR too
 def _fset(f):return rand.uniform(f[0], f[1]) if type(f) is np.ndarray else f
-@overload(_fset,**pcfg.jit_s)
+@overload(_fset,**cfg.jit_s,inline='always')
 def _fset_(f):
     if isinstance(f,types.Array):
         def _f(f): return rand.uniform(f[0], f[1])
@@ -44,21 +50,8 @@ def _fset_(f):
         def _f(f): return f
     return _f
 
-def fastround_int(f):return int(round(f,0))
-@overload(fastround_int,**pcfg.jit_s)
-def _fastround_int(f):
-    #rh=f(.5) #HMMMMMM #you might need a literal for this.
-    #print('Fastround int made half type:',type(rh),rh)
-    if isinstance(f,types.Float):
-        def _f(f): return nb.int64(f+.5)
-    elif isinstance(f,types.float32): #etc as needed
-        def _f(f): return nb.int32(f+nb.float32(.5))
-    else:
-        def _f(f):return int(f + .5) #pretty sure int always casts to int64 but see, maybe you can turn this into a map at compile time instead of elifs.
-    return _f
-
 def _pset(p):return rand.randrange(p[0], p[1]) if type(p) is np.ndarray else p
-@overload(_pset,**pcfg.jit_s)
+@overload(_pset,**cfg.jit_s)
 def _pset_(p):
     if isinstance(p,types.Array):
         def _p(p): return rand.randrange(p[0], p[1]) #jitter p for pbest selection by per generation.
@@ -68,7 +61,7 @@ def _pset_(p):
 
 def _meval(m,*args):
     if m is not None:m(*args)
-@overload(_meval,**pcfg.jit_tp) #allowing parallel tho idk what it could end up doing to it if monitor isn't.
+@overload(_meval,**cfg.jit_s) #allowing parallel tho idk what it could end up doing to it if monitor isn't. Nothing, the monitor func can be parallel.
 def _meval_(m,*args):
     if isinstance(m,types.Callable):
         def _m(m,*args): m(*args)
@@ -76,30 +69,54 @@ def _meval_(m,*args):
         def _m(m,*args): pass
     return _m
 
-@rg(**pcfg.jit_s)
+#Generational ema
+def disc_orn(v, c): return None if v is None else v * c
+@overload(disc_orn, **cfg.jit_s)
+def _disc_orn(v, c):return lambda v, c: None if isinstance(v, types.NoneType) else lambda v, c: v * c
+
+def optgen_ema(v, c, em_r, n_r):
+    if v is None:
+        return (1. - c) * em_r + c * n_r, None
+    else:
+        em_r = (1. - v) * em_r + v * n_r
+        return em_r, c
+
+@overload(optgen_ema, **cfg.jit_s)
+def _optgen_ema(v, c, em_r, n_r):
+    if isinstance(v, types.NoneType):
+        def cl(v, c, em_r, n_r):
+            return (1. - c) * em_r + c * n_r, None
+    else:
+        def cl(v, c, em_r, n_r):
+            em_r = (1. - v) * em_r + v * n_r
+            return em_r, c
+    return cl
+
+
+@rg(**cfg.jit_s)
 def knownfitness_fixedeval_logcost(evals, fitness, maxevals, minfit, maxfit):
     return log1p(evals)/log1p(maxevals) + log1p(max(fitness,minfit)-minfit)/log1p(maxfit-minfit) -1
     #The assumption is that as optimizer gets closer to beating the fitness, the rate of improvement will decrease roughly proportionally.
     #if it worsens h-param tuning performance try linear version below.
 
-@rg(**pcfg.jit_s)
+@rg(**cfg.jit_s)
 def knownfitness_fixedeval_lincost(evals, fitness, maxevals, minfit, maxfit):
     return (evals/maxevals) + (max(fitness,minfit)-minfit)/(maxfit-minfit) - 1
 
-@rg(**pcfg.jit_s)
+@rg(**cfg.jit_s)
 def logfit_lineval_cost(evals, fitness, maxevals, minfit, maxfit):
     #So linear evals does make more sense, confuses the optimizer less alegedly
     return (evals/maxevals) + log1p(max(fitness,minfit)-minfit)/log1p(maxfit-minfit) -1
 
 
-@rg(**pcfg.jit_s)
+@rg(**cfg.jit_s)
 def count_monitor(mute_pop:np.ndarray,ct_arr:np.ndarray):
     #An example, args should be altered for different optimizers.
     ct_arr[0]+=mute_pop.shape[0]
     ct_arr[1]+=1
 
 
-@nb.njit(**pcfg.jit_s)
+@nb.njit(**cfg.jit_s)
 def keep_bounds(population: np.ndarray,
                 bounds: np.ndarray) -> np.ndarray:
     """
@@ -121,7 +138,7 @@ def keep_bounds(population: np.ndarray,
         population[i, n] = min(max(population[i, n], bounds[n, 0]), bounds[n, 1])
     return population
 
-@nb.njit(**pcfg.jit_tp)
+@nb.njit(**cfg.jit_tp)
 def keep_bounds_pl(population: np.ndarray,
                 bounds: np.ndarray) -> np.ndarray:
     ps, pd = population.shape[0], population.shape[1]
@@ -132,7 +149,7 @@ def keep_bounds_pl(population: np.ndarray,
         population[i, n] = min(max(population[i, n], bounds[n, 0]), bounds[n, 1])
     return population
 
-@nb.njit(**pcfg.jit_s)
+@nb.njit(**cfg.jit_s)
 def place_bounded_vec(search_vec: np.ndarray,
                       param_vec:np.ndarray,
                 bounds: np.ndarray) -> np.ndarray:
@@ -141,7 +158,7 @@ def place_bounded_vec(search_vec: np.ndarray,
     return param_vec
 
 
-@nb.njit(**pcfg.jit_s)
+@nb.njit(**cfg.jit_s)
 def bounds_safe(p_vec: np.ndarray,bounds: np.ndarray):
     sb=np.int64(0)
     for v in range(p_vec.shape[0]):
@@ -157,7 +174,7 @@ def bounds_safe(p_vec: np.ndarray,bounds: np.ndarray):
 
 #Check which is quicker
 def _scaled_bc(n,pv,scale)->float:pass
-@overload(_scaled_bc,**pcfg.jit_s)
+@overload(_scaled_bc, **cfg.jit_s)
 def _scaled_bc_(n,pv,scale):
     if isinstance(scale, types.NoneType):
         def _impl(n,pv,scale): return pv
@@ -167,8 +184,11 @@ def _scaled_bc_(n,pv,scale):
         def _impl(n,pv, scale):return pv*scale[n]
     return _impl
 
+@register_jitable(**cfg.jit_s)
+def ri64(rd:nb.float64):
+    return nb.int64(rd+.5)
 
-@nb.njit(**pcfg.jit_s)
+@nb.njit(**cfg.jit_s)
 def lnorm_bounds_cost(population: np.ndarray,
                       bounds: np.ndarray,
                       bc: np.ndarray, #total cost for population member.
@@ -187,7 +207,7 @@ def lnorm_bounds_cost(population: np.ndarray,
     return bc
 
 
-@nb.njit(**pcfg.jit_s)
+@nb.njit(**cfg.jit_s)
 def place_bounded_vec_calccost(search_vec: np.ndarray,
                                param_vec:np.ndarray,
                                bounds: np.ndarray,
@@ -227,13 +247,13 @@ def make_bounds_costscalingarray(bounds:np.ndarray,p:float|np.ndarray=2.):
 def mk_fitness_thresh_stop(fitn:float=0.):
     if fitn is not None:
         #hopefully..., yer seems to work.
-        @nb.njit(**pcfg.jit_s)
+        @nb.njit(**cfg.jit_s)
         def f(population,fitness):
             return fitness_threshold_stop(population,fitness,fitn)
         return f
     return None
 
-@nb.njit(**pcfg.jit_s)
+@nb.njit(**cfg.jit_s)
 def fitness_threshold_stop(population:np.ndarray,fitness:np.ndarray,stopt:float=0.):
     for i in fitness:
         if i<stopt:
@@ -242,15 +262,16 @@ def fitness_threshold_stop(population:np.ndarray,fitness:np.ndarray,stopt:float=
 
 #Add coordinate based pop stopper.
 
-@rg(**pcfg.jit_tp)
-def init_randuniform(population_size, individual_size, bounds)-> np.ndarray:
+@rg(**cfg.jit_tp)
+def initpop_randuniform(population_size, individual_size, bounds,*_rec)-> np.ndarray:
     minimum = bounds[:,0]
     maximum = bounds[:,1]
     population = np.random.rand(population_size, individual_size) * (maximum-minimum) + minimum
     return population
 
-@nb.njit(**pcfg.jit_ap)
-def place_randuniform(pop,bounds):
+
+@nb.njit(**cfg.jit_tp)
+def placepop_randuniform(pop, bounds,*_rec):
     ps, pd = pop.shape[0], pop.shape[1]
     if ps*pd>2000:
         for v in nb.prange(ps*pd):
@@ -263,6 +284,17 @@ def place_randuniform(pop,bounds):
             n = v % pd
             pop[i,n]=rand.uniform(bounds[n,0],bounds[n,1])
 
+
+@register_jitable(**cfg.jit_s)
+def place_randnormal(vec,mean,std):
+    for i in range(vec.shape[0]):
+        vec[i] = rand.normalvariate(mean, std)
+
+
+@register_jitable(**cfg.jit_s)
+def place_randnormal_fbds(vec,mean,std,minn,maxx):
+    for i in range(vec.shape[0]):
+        vec[i] = min(max(rand.normalvariate(mean, std),minn),maxx)
 
 
 def init_soboluniform(population_size, individual_size, bounds)-> np.ndarray:
@@ -291,7 +323,7 @@ def init_population(population_size: int, individual_size:int,
         if rand_spec=='sobol':
             _p=init_soboluniform(population_size, individual_size, bounds) #most effective if pop_size = 2**k for some k>2. Otherwise won't be that different from uniform.
         elif rand_spec=='uniform':
-            _p = init_randuniform(population_size, individual_size, bounds)
+            _p = initpop_randuniform(population_size, individual_size, bounds)
         else:
             _p = init_soboluniform(population_size, individual_size, bounds)
     elif isinstance(rand_spec,Callable):
@@ -310,7 +342,7 @@ def init_population(population_size: int, individual_size:int,
 #
 #*args : best idxs, cr, crw, f, fw, h etc go here.
 
-@nb.njit(**pcfg.jit_s)
+@nb.njit(**cfg.jit_s)
 def bin_mutate(crr:np.ndarray, ci:np.int64, m_pop: np.ndarray, pop: np.ndarray, idx:np.ndarray, f):
     #Could create duplicates... though unlikely with crossover
     for i in crr:
@@ -318,14 +350,12 @@ def bin_mutate(crr:np.ndarray, ci:np.int64, m_pop: np.ndarray, pop: np.ndarray, 
 
 
 
-@nb.njit(**pcfg.jit_s)
-def c_to_best_2_bin_mutate(crr:np.ndarray, ci:np.int64, m_pop_vec: np.ndarray, pop: np.ndarray, idx:np.ndarray, b_idx, f):
-    #c_to_pbest_mutate(crr:np.ndarray, ci:np.int64, m_pop_vec: np.ndarray, pop: np.ndarray, idx:np.ndarray, b_idx:np.ndarray, p:np.ndarray, f:np.ndarray):
-
+@nb.njit(**cfg.jit_s)
+def c_to_best_2_mutate(crr:np.ndarray, ci:np.int64, m_pop_vec: np.ndarray, pop: np.ndarray, idx:np.ndarray, b_idx, f):
     """
     Calculates the mutation of a vector based on the
     "current to best/2/bin" mutation. This is
-    V_{i, G} = X_{i, G} + F * (X_{best, G} - X_{i, G} + F * (X_{r1. G} - X_{r2, G} Actually I think it's wrong lol.
+    V_{i, G} = X_{i, G} + F * (X_{best, G} - X_{i, G} + F * (X_{r1, G} - X_{r2, G} Actually I think it's wrong lol.
     Also includes binary crossover.
     """
     for i in crr:
@@ -335,7 +365,7 @@ def c_to_best_2_bin_mutate(crr:np.ndarray, ci:np.int64, m_pop_vec: np.ndarray, p
 
 
 def _get_br(ci, b_idx,p_idx):pass
-@overload(_get_br,**pcfg.jit_s)
+@overload(_get_br, **cfg.jit_s)
 def _get_br_(ci, b_idx, p_idx):
     if isinstance(p_idx, types.Array):
         def _impl(ci, b_idx, p_idx): return b_idx[rand.randint(0, p_idx[ci])]
@@ -346,7 +376,7 @@ def _get_br_(ci, b_idx, p_idx):
     return _impl
 
 def _get_f(ci,i, f):pass #already handles the 1d case.
-@overload(_get_f,**pcfg.jit_s)
+@overload(_get_f, **cfg.jit_s)
 def _get_f_(ci,i, f):
     if isinstance(f, types.Array):
         if f.ndim==2:
@@ -360,12 +390,14 @@ def _get_f_(ci,i, f):
     return _impl
 
 
-@nb.njit(**pcfg.jit_s)
+@nb.njit(**cfg.jit_s)
 def c_to_pbest_mutate(crr:np.ndarray, ci:np.int64, m_pop_vec: np.ndarray, pop: np.ndarray, idx:np.ndarray, b_idx:np.ndarray, p:np.ndarray, f:np.ndarray):
     """
     Calculates the mutation of a vector based on the
     "current to p-best" mutation. Includes binary crossover. This is
-    V_{i, G} = X_{i, G} + F * (X_{p_best, G} - X_{i, G} + F * (X_{r1. G} - X_{r2, G}
+    V_{i, G} = X_{i, G} + F * (X_{p_best, G} - X_{i, G} + F * (X_{r1. G} - X_{r2, G}.
+    For pbest, its ok if the bp selected is the current vector or one of the randoms, only that the randoms aren't equal.
+    What is nice about pbest is that if ci = br then it becomes ~rand1.
     """
     #Later on consider mutations that select dimensions randomly, this sb a simple matter by using randint for an idx range.
     br = _get_br(ci, b_idx, p)
@@ -374,7 +406,7 @@ def c_to_pbest_mutate(crr:np.ndarray, ci:np.int64, m_pop_vec: np.ndarray, pop: n
         m_pop_vec[i]=pop[ci,i] + scale * (pop[br,i] - pop[ci,i]) + scale * (pop[idx[0],i] - pop[idx[1],i])
 
 
-@nb.njit(**pcfg.jit_s)
+@nb.njit(**cfg.jit_s)
 def c_to_rand1_mutate(crr:np.ndarray, ci:np.int64, m_pop_vec: np.ndarray, pop: np.ndarray, idx:np.ndarray, f:np.ndarray, k:np.ndarray):
     """
     Calculates the mutation of a vector based on the
@@ -388,7 +420,7 @@ def c_to_rand1_mutate(crr:np.ndarray, ci:np.int64, m_pop_vec: np.ndarray, pop: n
 
 
 
-@nb.njit(**pcfg.jit_s)
+@nb.njit(**cfg.jit_s)
 def c_to_pbestw_mutate(crr:np.ndarray, ci:np.int64, m_pop_vec: np.ndarray, pop: np.ndarray, idx:np.ndarray, b_idx:np.ndarray, p: np.int64 | np.ndarray, f:np.ndarray, f_w:np.ndarray):
     """
     Calculates the mutation of a vector based on the
@@ -405,13 +437,35 @@ def c_to_pbestw_mutate(crr:np.ndarray, ci:np.int64, m_pop_vec: np.ndarray, pop: 
         m_pop_vec[i]+=s2 * (pop[br,i] - pop[ci,i]) + s1 * (pop[idx[0],i] - pop[idx[1],i])
 
 
+@nb.njit(**cfg.jit_s)
+def c_to_pbesta_mutate(crr:np.ndarray, ci:np.int64, m_pop_vec: np.ndarray, pop: np.ndarray, idx:np.ndarray, b_idx:np.ndarray, p:np.ndarray, f:np.ndarray,a:np.ndarray):
+    """
+    Calculates the mutation of a vector based on the
+    "current to p-best-archive" mutation. This is
+    V_{i, G} = X_{i, G} + F * (X_{p_best, G} - X_{i, G} + F * (X_{r1. G} - X_{r2, G}
+    Where r2 comes from the union of the current population and the archive.
+    This essentially turns it into a double layered pbest, the second pbest layer is the population itself.
+    For efficient implementation, we know that r2 or idx[1] has pop_size - 2 = ps possibilities.
+    We also know that the archive has a.shape[0] = ars possibilities, to simulate a uniform choice
+    from P U A select : pop[idx[1]] if ps/(ps+as) < random.uniform(0,1) else a[rand.randrange(0,ars)]
+    """
+    #Later on consider mutations that select dimensions randomly, this sb a simple matter by using randint for an idx range.
+    #Turned out to be a shockingly easy add, nothing else needed to generalize the current setup.
+    br = _get_br(ci, b_idx, p)
+    ps,ars=pop.shape[0]-2,a.shape[0]
+    rand2 = pop[idx[1]] if ps/(ps+ars) < rand.random() else a[rand.randrange(0,ars)]
+    for i in crr:
+        scale = _get_f(ci,i, f)
+        m_pop_vec[i]=pop[ci,i] + scale * (pop[br,i] - pop[ci,i]) + scale * (pop[idx[0],i] - rand2[i])
+
+
 _N=types.none
 
 
 #going to remove this, up to user to enforce parameters instead
 def enforce_bounds(population: np.ndarray,
                    bounds: np.ndarray, enf_bds):pass
-@overload(enforce_bounds,**pcfg.jit_s)
+@overload(enforce_bounds, **cfg.jit_s)
 def _enforce_bounds(population, bounds,enf_bds):
     if enf_bds is _N:
         def _eb(population, bounds,enf_bds):
@@ -422,7 +476,7 @@ def _enforce_bounds(population, bounds,enf_bds):
     return _eb
 
 
-@nb.njit(**pcfg.jit_s)
+@nb.njit(**cfg.jit_s)
 def bin_cross_init(m_pop_vec:np.ndarray,pop_vec:np.ndarray,idxg:np.ndarray,ci,cr): #I'll assume cr is still an int for now. add array overload if it is happened on.
     sh=idxg.shape[0]
     l=0
@@ -437,7 +491,7 @@ def bin_cross_init(m_pop_vec:np.ndarray,pop_vec:np.ndarray,idxg:np.ndarray,ci,cr
 
 
 #uchoice_mutator : unique choice mutator, incorporates the current-member-skipping random choice
-@nb.njit(**pcfg.jit_s) #Comment this out and it should still be runnable in python-mode up to individual crossover and mutation. But this is only for bug testing, should never need python mode for the uchoice_mutator
+@nb.njit(**cfg.jit_s) #Comment this out and it should still be runnable in python-mode up to individual crossover and mutation. But this is only for bug testing, should never need python mode for the uchoice_mutator
 def uchoice_mutator(population: np.ndarray,
                     m_pop:np.ndarray,
                     cr: float|np.ndarray,
@@ -456,7 +510,7 @@ def uchoice_mutator(population: np.ndarray,
 
     #if pop_size*pop_dims*num_resamples< 100k to 500k then probably not worth parallel, the overhead of launching parallel threads can be like 5-10x a couple hundred ops..
 
-    _uchoice_loop(population, m_pop, bounds, reject_mx, cr, cross_apply, mut_apply, _ns, _idx, _crossgen, _t_pop, *mut_args,pcfg.nc_t)
+    _uchoice_loop(population, m_pop, bounds, reject_mx, cr, cross_apply, mut_apply, _ns, _idx, _crossgen, _t_pop, *mut_args, cfg.nc_t)
 
     #removed, truncating search scalars never helps DE algos perform better, instead add bounds violation cost to fitness func and
     #use a parameter population array that truncates the search population array with bounds and eval the fitness func with that
@@ -468,7 +522,8 @@ def _uchoice_loop(population,m_pop,bounds,reject_mx,cr,cross_apply,mut_apply, _n
     if reject_mx is None or bounds is None or _t_pop is None: _uchoice_nsample_loop(population, m_pop, cr, cross_apply, mut_apply, _ns, _idx, _crossgen, *mut_args)
     else:_uchoice_rejectbounds_loop(population, m_pop, bounds, reject_mx, cr, cross_apply, mut_apply, _ns, _idx, _crossgen, _t_pop,*mut_args)
 
-@overload(_uchoice_loop,inline='always',**pcfg.jit_s) #this one does need to be inlined so it sees the new do nothing dispatcher to make the toggle work.
+#this one does need to be inlined so it sees the new do nothing dispatcher to make the toggle work. Actually maybe not, knowing how it works with non njit funcs
+@overload(_uchoice_loop, **cfg.jit_s)#inline='always'
 def _uchoice_loop_(population,m_pop,bounds,reject_mx,cr,cross_apply,mut_apply, _ns, _idx,_crossgen,_t_pop,*mut_args):
     if reject_mx is _N or bounds is _N or _t_pop is _N:
         def _r(population,m_pop,bounds,reject_mx,cr,cross_apply,mut_apply, _ns, _idx,_crossgen,_t_pop,*mut_args):
@@ -483,12 +538,12 @@ def _uchoice_loop_(population,m_pop,bounds,reject_mx,cr,cross_apply,mut_apply, _
     return _r
 
 
-@rg(**pcfg.jit_tp)
+@rg(**cfg.jit_tp)
 def _uchoice_rejectbounds_loop(population, m_pop, bounds, reject_mx, cr, cross_apply, mut_apply, _ns, _idx, _crossgen, _t_pop, *mut_args):
     pop_size = population.shape[0]
     p_d=population.shape[1]
     reps=reject_mx
-    if pcfg.parallel_enabled and pop_size*(p_d+20)*reject_mx//8>1100:
+    if cfg.parallel_enabled and pop_size*(p_d + 20)*reject_mx//8>1100:
         #If you are being really performance oriented estimate the avg # of rejections from the previous iterations with an extra array for the divisor.
         #Then estimate the likely # of rejections based on pop num, current average cr, and current f.
         nthds=nb.get_num_threads()
@@ -498,11 +553,13 @@ def _uchoice_rejectbounds_loop(population, m_pop, bounds, reject_mx, cr, cross_a
             _reject_bounds_iter(tid,v,_ns,p_d,cross_apply,_t_pop,population,_crossgen,cr,reps,pop_size,_idx,mut_apply,bounds,m_pop,*mut_args[:-1])
         nb.set_parallel_chunksize(ld)
     else:
+        tid=0 #if pcfg.parallel_enabled else nb.get_thread_id() #if it lands here but still parallel enabled, it's because cost of launching parallel threads is >, otherwise its because simultaneous optimizations using same array.
+        #print('tid',tid)
         for v in range(0, pop_size):
-            _reject_bounds_iter(0,v,_ns,p_d,cross_apply,_t_pop,population,_crossgen,cr,reps,pop_size,_idx,mut_apply,bounds,m_pop,*mut_args[:-1])
+            _reject_bounds_iter(tid,v,_ns,p_d,cross_apply,_t_pop,population,_crossgen,cr,reps,pop_size,_idx,mut_apply,bounds,m_pop,*mut_args[:-1])
 
 
-@rg(**pcfg.jit_s)
+@rg(**cfg.jit_s)
 def _reject_bounds_iter(tid,v,_ns,p_d,cross_apply,_t_pop,population,_crossgen,cr,reps,pop_size,_idx,mut_apply,bounds,m_pop,*mut_args):
     # hoping these don't cost anything, so it will pick up on it's last memory location.
     _s_mem = np.empty((_ns, 2), dtype=np.int64)  # Yeah does seem a little quicker
@@ -521,11 +578,11 @@ def _reject_bounds_iter(tid,v,_ns,p_d,cross_apply,_t_pop,population,_crossgen,cr
                 break
 
 
-@rg(**pcfg.jit_tp)
+@rg(**cfg.jit_tp)
 def _uchoice_nsample_loop(population,m_pop,cr,cross_apply,mut_apply, _ns, _idx,_crossgen,*mut_args):
     pop_size = population.shape[0]
     p_d=population.shape[1]
-    if pcfg.parallel_enabled and pop_size*(p_d+20)>1100: #could end up being different for different computers. For high pop count it's still more efficient. hense the +8.
+    if cfg.parallel_enabled and pop_size*(p_d + 20)>1100: #could end up being different for different computers. For high pop count it's still more efficient. hense the +8.
         nthds=nb.get_num_threads()
         ld=nb.set_parallel_chunksize(ceil(population.shape[0]/nthds)) #consider making a chunk size merging system when total # ops is clearly small enough.
         for v in nb.prange(0, pop_size):
@@ -533,11 +590,12 @@ def _uchoice_nsample_loop(population,m_pop,cr,cross_apply,mut_apply, _ns, _idx,_
             _nsample_iter(tid, v, _ns, p_d, cross_apply, population, _crossgen, cr, pop_size, _idx, mut_apply, m_pop, *mut_args[:-1])
         nb.set_parallel_chunksize(ld)
     else:
+        tid = 0 #if pcfg.parallel_enabled else nb.get_thread_id()
         for v in range(0, pop_size):
-            _nsample_iter(0,v,_ns,p_d,cross_apply,population,_crossgen,cr,pop_size,_idx,mut_apply,m_pop,*mut_args[:-1])
+            _nsample_iter(tid,v,_ns,p_d,cross_apply,population,_crossgen,cr,pop_size,_idx,mut_apply,m_pop,*mut_args[:-1])
 
 
-@rg(**pcfg.jit_s)
+@rg(**cfg.jit_s)
 def _nsample_iter(tid,v,_ns,p_d,cross_apply,population,_crossgen,cr,pop_size,_idx,mut_apply,m_pop,*mut_args):
     _s_mem = np.empty((_ns, 2), dtype=np.int64)  # Yeah does seem a little quicker
     _bb = p_d + 1
@@ -548,7 +606,7 @@ def _nsample_iter(tid,v,_ns,p_d,cross_apply,population,_crossgen,cr,pop_size,_id
 
 
 #_sw_in and _sw_out are durstenfeld random shuffle with current skipping for j.
-@njit(**pcfg.jit_s)
+@njit(**cfg.jit_s)
 def _sw_in(n_shuffles, pop_size, v, _idx, tid, _s_mem):
     for i in range(n_shuffles):
         # Generate a random index j with i <= j < n
@@ -562,7 +620,7 @@ def _sw_in(n_shuffles, pop_size, v, _idx, tid, _s_mem):
         _idx[tid, i] = _idx[tid, j]
         _idx[tid, j] = tmp
 
-@njit(**pcfg.jit_s)
+@njit(**cfg.jit_s)
 def _sw_out(n_shuffles, _idx, tid, _s_mem):
     for i in range(n_shuffles - 1, -1, -1):
         x, y = _s_mem[i, 0], _s_mem[i, 1]
@@ -571,7 +629,7 @@ def _sw_out(n_shuffles, _idx, tid, _s_mem):
         _idx[tid, y] = tmp
 
 
-@nb.njit(**pcfg.jit_s)
+@nb.njit(**cfg.jit_s)
 def select_better(fitness: np.ndarray, new_fitness: np.ndarray,_idxs: np.ndarray) -> np.ndarray:
     """
     Selects the best individuals based on their fitness.
@@ -583,13 +641,54 @@ def select_better(fitness: np.ndarray, new_fitness: np.ndarray,_idxs: np.ndarray
             bt+=1
     return _idxs[:bt]
 
+@nb.njit(**cfg.jit_s)
+def bin_rchoose(binr: np.ndarray, prob:float) -> np.ndarray:
+    """
+    Randomly divide indices between likelihood and not likelihood.
+    """
+    #Because it's binary it allows for this single pass unique for of assignment. The problem is it's biased by index
+    #location, so you should randomize/shuffle any coordinate references to it if it's cheaper
+    bt=0
+    btn=binr.shape[0]
+    for i in range(binr.shape[0]):
+        if prob<rand.random():
+            binr[bt]=i
+            bt+=1
+        else:
+            btn-=1
+            binr[btn]=i
+    return binr[:bt],binr[bt:]
+
+@rg(**cfg.jit_s)
+def fast_binom(iters,p):
+    s=0
+    for _ in range(1,iters):
+        s+=p>rand.random()
+    return s
+
+@nb.njit(**cfg.jit_s)
+def durstenfeld_p_shuffle(a, k):
+    """
+    Perform up to k swaps of the Durstenfeld shuffle on array 'a',
+    storing each swap in 'swap_memory' and then reversing them
+    to restore 'a' to its original order.
+    Given
+    """
+    n = a.shape[0]
+    num_swaps = min(k, n - 1)
+    for i in range(num_swaps):
+        j = rand.randrange(i,n)
+        # Swap in-place
+        tmp = a[i]
+        a[i] = a[j]
+        a[j] = tmp
 
 
 #---- Depricated or experiment with later.
 
 
 #@nb.njit(**pcfg.jit_tp)
-@rg(**pcfg.jit_tp)
+@rg(**cfg.jit_tp)
 def _uchoice_rejectpolicy_loop(population, m_pop, bounds, reject_mx, cr, cross_apply, mut_apply, _ns, _idx, _crossgen, _t_pop,_adegen, *mut_args):
     pop_size = population.shape[0]
     p_d=population.shape[1]
@@ -603,7 +702,7 @@ def _uchoice_rejectpolicy_loop(population, m_pop, bounds, reject_mx, cr, cross_a
     nb.set_parallel_chunksize(ld)
 
 #@nb.njit(**pcfg.jit_s)
-@rg(**pcfg.jit_s)
+@rg(**cfg.jit_s)
 def _reject_policy_iter(tid,v,_ns,p_d,cross_apply,_t_pop,population,_crossgen,cr,reps,pop_size,_idx,mut_apply,bounds,m_pop,*mut_args):
     # hoping these don't cost anything, so it will pick up on it's last memory location.
     _s_mem = np.empty((_ns, 2), dtype=np.int64)  # Yeah does seem a little quicker
@@ -638,7 +737,7 @@ def _reject_policy_iter(tid,v,_ns,p_d,cross_apply,_t_pop,population,_crossgen,cr
 #or instead, keep an archive of old members, going down the archive in historical order, select the first that provides the
 #required parameter breadth, or if none do then the closest one in the archive. As this might not promote enough diversity, you can
 #instead select the first n or closest n, then randomly choose from that sub group.
-@njit(**pcfg.jit_s)
+@njit(**cfg.jit_s)
 def _rejection_policy(m_vec: np.ndarray,
                      pop:np.ndarray,
                      v:int,#The index of the current vector so it can be skipped

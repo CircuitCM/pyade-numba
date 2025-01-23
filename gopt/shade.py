@@ -4,6 +4,9 @@ import scipy.stats
 import random
 from typing import Callable, Union, Dict, Any
 
+#https://ieeexplore.ieee.org/document/6557798
+#"An improved version of JADE."
+
 
 def get_default_params(dim: int):
     """
@@ -82,15 +85,16 @@ def apply(population_size: int, individual_size: int, bounds: np.ndarray,
     all_indexes = list(range(memory_size))
     max_iters = max_evals // population_size
     for current_generation in range(max_iters):
+        #Fortunately it seems to be mostly jade
         # 2.1 Adaptation
         r = np.random.choice(all_indexes, population_size)
         cr = np.random.normal(m_cr[r], 0.1, population_size)
         cr = np.clip(cr, 0, 1)
         cr[cr == 1] = 0
         f = scipy.stats.cauchy.rvs(loc=m_f[r], scale=0.1, size=population_size)
-        f[f > 1] = 0
+        f[f > 1] = 0 #wtf lol
 
-        while sum(f <= 0) != 0:
+        while sum(f <= 0) != 0: #well at least he tried to make it more efficient.
             r = np.random.choice(all_indexes, sum(f <= 0))
             f[f <= 0] = scipy.stats.cauchy.rvs(loc=m_f[r], scale=0.1, size=sum(f <= 0))
 

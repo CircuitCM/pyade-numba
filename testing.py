@@ -137,7 +137,7 @@ def durstenfeld_partial_shuffle(a, k):
     # Forward pass: shuffle (up to k swaps)
     for i in range(num_swaps):
         # Generate a random index j with i <= j < n
-        j = rand.randint(i,n-1)
+        j = rand.randrange(i,n)
         # Record swapped indices
         swap_memory[i, 0] = i
         swap_memory[i, 1] = j
@@ -173,6 +173,7 @@ def binary_mutation(population: np.ndarray,
     #mutated += population[parents[:, 2]]
 
     return keep_bounds(m_pop, bounds)
+
 
 @nb.njit(**nb_cs())
 def _bin_crossover_o(pop_vec: np.ndarray, m_pop_vec: np.ndarray,cr,j_rand) -> np.ndarray:

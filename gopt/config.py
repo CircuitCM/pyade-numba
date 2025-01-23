@@ -43,9 +43,9 @@ class NBPopts(ParallelOptions): #hacked parallel options, needed to get the bool
 parallel_enabled=True #to enable/disable explicit parallel branches. eg you have something that uses thread_ids instead of just implicit concurrency.
 parallel_dec_toggle=NBPopts(DBool(True))
 nc_t= nb.njit(lambda:None) #When replaced with a new registered lambda and added as an unused argument to an njit function, it will force a recompilation for that section of the IR chain, maybe.
-_dft=dict(fastmath=True, error_model='numpy',cache=True) #numba should sense changes to globals so cache shouldn't interfere
+_dft=dict(fastmath=True, error_model='numpy',cache=False) #numba should sense changes to globals so cache shouldn't interfere
 jit_s=_dft|dict(parallel=False) #jit sync only settings. Sync Dispatchers can still call parallel jit funcs, fyi.
-jit_tp=_dft|dict(parallel=parallel_dec_toggle) #jit toggle parallel settings.
+jit_tp=_dft|dict(parallel=parallel_dec_toggle) #jit toggle parallel settings. #parallel_dec_toggle
 jit_ap=_dft|dict(parallel=True) #jit always parallel settings.
 
 def disable_optional_parallelism():
@@ -82,6 +82,7 @@ _M_CUR_T_BEST2=1
 _M_CUR_T_PBEST=2
 _M_CUR_T_RAND1=3
 _M_CUR_T_PBESTW=4
+_M_CUR_T_PBESTA=5
 
 #Population selection for different mutation strategies. Don't change unless rewriting mutation operators.
 _BIN_M_R=3
@@ -89,6 +90,7 @@ _C_T_B2_M_R=2
 _C_T_PB_M_R=2
 _C_T_R1_M_R=3
 _C_T_PBW_M_R=2
+_C_T_PBA_M_R=2
 
 #Classes for user selection in py
 class MutationSelector:
@@ -97,6 +99,7 @@ class MutationSelector:
     CUR_T_PBEST=_M_CUR_T_PBEST
     CUR_T_RAND1=_M_CUR_T_RAND1
     CUR_T_PBESTW=_M_CUR_T_PBESTW
+    CUR_T_PBESTA=_M_CUR_T_PBESTA
 
 class CrossoverSelector:
     BIN = 0 #only bin is available for now.
@@ -166,21 +169,22 @@ class SamplerRejectionPolicy: #well rip.
 #instead select the first n or closest n, then randomly choose from that sub group.
 
 #Implementation Schedule:
-#Jade
-#Sade
-#Shade
-#LShade
-#ILShade
-#lshadecnepsin
-#mpede
-#jso
-#ADEGTO from that book
+#Jade implementation d, setup n
+#Sade implementation d, setup n
+#Shade implementation n, setup n
+#LShade implementation n, setup n
+#ILShade implementation n, setup n
+#lshadecnepsin implementation n, setup n
+#mpede - maybe
+#jso -maybe
+#ADEGTO from that book, sb easy ish, implementation n, setup n
 
 #After essential implementations:
 #Jade with archive, IJADE maybe, see that 2013 paper, but prob not worth it, sal-shade-epsin and the others before it likely are tho.
 #Own implementation: JADE-Sep (maybe some other IJADE features), F is now separable by dimension so it's a 2D sample and 1D for U_f,
 #CR can also be seperable actually, it might be a decent idea, letting certain dimensions adapt first, however could introduce sign bias.
 #CR technically doesn't need hard limits either, as long as 1 sample is forced.
+#CoDE
 #current-to-pbest2,
 #current-to-pbesta,
 #current-to-pbest2a, a is archive, 2 includes either another best difference or random diff.
@@ -189,3 +193,7 @@ class SamplerRejectionPolicy: #well rip.
 #For proximity you'll want something else... like some kind of exponential or L2 version (failed to improve results for now).
 
 #Rejection sampling for different biases, such as proximity to other member that are not it's current, dimensional flattening avoidance. (failed to improve results).
+
+#https://link.springer.com/article/10.1007/s42979-024-03062-2 maybe.
+
+#https://en.wikipedia.org/wiki/Evolutionary_multimodal_optimization basically finding many local solutions.

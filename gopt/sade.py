@@ -1,6 +1,12 @@
+import gopt.commons as cmn
+import gopt.config as cfg
 import numpy as np
-import gopt.commons
-from typing import Union, Callable, Dict, Any
+from typing import Callable, Union, Dict, Any
+import numba as nb
+from numba.core.extending import overload,register_jitable
+import math as m
+import random as rand
+A=np.ndarray
 
 
 def get_default_params(dim: int) -> dict:
@@ -144,3 +150,120 @@ def apply(population_size: int, individual_size: int,
 
     best = np.argmin(fitness)
     return population[best], fitness[best]
+
+@register_jitable(**cfg.jit_s)
+def init_algo_stack(population:A, yes=True):
+    nt=nb.get_num_threads()
+    m_pop=np.empty(population.shape,dtype=np.float64)
+    _crr, _t_pop = init_parameter_stack(nt, population.shape[1], yes)
+    _idx,_ftdiym=init_population_stack(nt, population.shape[0])
+    return m_pop,_idx[:-1],_crr,_t_pop,_ftdiym,_idx[-1],#_adegen
+
+
+@register_jitable(**cfg.jit_s)
+def init_parameter_stack(nt, pop_dim, yes=True):
+    _crr = np.empty((nt,pop_dim),dtype=np.int64)
+    _t_pop=np.empty((nt,pop_dim),dtype=np.float64) if yes else None
+    return _crr,_t_pop
+
+
+@register_jitable(**cfg.jit_s)
+def init_population_stack(nt, pop_size):
+    _idx = np.empty((nt + 1, pop_size), dtype=np.int64)
+    _idx[:-1] = np.arange(0, pop_size)
+    _ftdiym = np.empty((pop_size,), dtype=np.float64)
+    #_ftdiym[:]=0. #if there is dependence on prev fit values, then zero init is necessary
+    return _idx,_ftdiym
+
+#implement when you want to do meta optimization.
+def set_concurrentrun_stack():pass
+def fix_concurrentrun_stack():pass
+def fix_stack():pass
+
+@nb.njit(**cfg.jit_s)
+def run_sade(population: A,
+                       bounds: A,
+                       reject_mx: int,
+                       max_iters: int,
+                       f: float, f_std: float,
+                       cr: float, cr_std: float, cr_freq: float,  # add bounds if you actually want to develop this algo more
+                       t_prob: int | np.ndarray, p_freq: int,
+                       cross_apply: Callable,
+                       stop_apply: Callable,
+                       pop_eval: Callable,
+                       monitor: Callable,
+                       _m_pop: A, _idx: A, _crr: A, _t_pop: A, _ftdiym: A, _idxs: A,
+                       *eval_opts):
+
+    return run_sade_nocompile(population,bounds,reject_mx,max_iters,f,f_std,cr,cr_std, cr_freq,t_prob,p_freq,cross_apply,stop_apply,pop_eval,monitor,
+                                     _m_pop,_idx,_crr,_t_pop,_ftdiym, _idxs,*eval_opts)
+
+
+
+@register_jitable(**cfg.jit_s)
+def run_sade_nocompile(population: A,
+                       bounds: A,
+                       reject_mx: int,
+                       max_iters: int,
+                       f: float, f_std: float,
+                       cr: float, cr_std: float, cr_freq: float,  # add bounds if you actually want to develop this algo more
+                       t_prob: int | np.ndarray, p_freq: int,
+                       cross_apply: Callable,
+                       stop_apply: Callable,
+                       pop_eval: Callable,
+                       monitor: Callable,
+                       _m_pop: A, _idx: A, _crr: A, _t_pop: A, _ftdiym: A, _idxs: A,
+                       *eval_opts):
+    # The original sade, though I like the emas of jade instead of the generation sampling method for cr. Yeah this CR finding method seems silly.
+    # Using the same randomly selected CR values for several generations, instead of generating them from the same distribution at each iteration
+    # Could leave gaps in convergence runs.
+    # Also rand1/binary could end up with some more duplicates
+    # sade uses current-to-best-2 but in the paper it appears no different from current to best...
+    # https://www.sciencedirect.com/science/article/pii/S2351978920308684 according to this sade isn't competitive for tensile optimization.
+    cr_sam = np.minimum(np.maximum(0., np.random.normal(cr, cr_std, population.shape[0])),
+                        1.)  # tbh could choose more than pop size of cr and random select.
+    f_sam = np.random.normal(f, f_std, population.shape[0])  # maybe turned these into arg arrays for further development too.
+    s_bin = s_tbi = 0
+    s_best = s_tbe = 0
+    cr_sbest = 0
+    cr_soccur = 0
+    # u_f = f_mean #f doesn't adapt in this one.
+
+    # https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=1554904 implementation
+    ftdiym = pop_eval(population, *eval_opts)
+    _ftdiym[:] = ftdiym
+    _b = np.argmin(_ftdiym)  # rand1
+    for current_generation in range(max_iters):
+        bn = cmn.fast_binom(population.shape[0], t_prob)
+        cmn.durstenfeld_p_shuffle(cr_sam, cr_sam.shape[0])
+        s_bin += bn  # total sums, not sums are redundant.
+        s_best += (population.shape[0] - bn)
+        cmn.uchoice_mutator(population[:bn], _m_pop[:bn], cr_sam[:bn], bounds, reject_mx, cross_apply,
+                            cmn.c_to_pbest_mutate, cfg._BIN_M_R, _idx, _crr, _t_pop, f_sam)
+        cmn.uchoice_mutator(population[bn:], _m_pop[bn:], cr_sam[bn:], bounds, reject_mx, cross_apply,
+                            cmn.c_to_best_2_mutate, cfg._C_T_B2_M_R, _idx, _crr, _t_pop, _b, f_sam)
+
+        ftdiym = pop_eval(_m_pop, *eval_opts)
+        cmn._meval(monitor, population, _m_pop, _ftdiym, *eval_opts)
+        bdx = cmn.select_better(_ftdiym, ftdiym, _idxs)
+        _ftdiym[bdx] = ftdiym[bdx]
+        population[bdx] = _m_pop[bdx]
+
+        k1 = sum(bdx < bn)
+        s_tbi += k1  # successes count for rand1
+        s_tbe += (bdx.shape[0] - k1)  # success count for best 1 (or 2 paper doesn't say the difference)
+        cr_sbest += sum(cr_sam[bdx])
+        cr_soccur += bdx.shape[0]
+
+        if (current_generation + 1) % p_freq == 0 and s_tbi > 0 and s_tbe > 0:
+            t_prob = s_tbi * s_best / (s_tbi * s_best + s_tbe * s_bin)
+            s_tbi = s_tbe = s_best = s_bin = 0
+
+        if (current_generation + 1) % cr_freq == 0 and cr_soccur > 0:
+            cr = cr_sbest / cr_soccur
+            cr_sbest = cr_soccur = 0
+            cmn.place_randnormal_fbds(cr_sam, cr, cr_std, 0., 1.)
+
+        if stop_apply is not None and stop_apply(population, _ftdiym): break
+        cmn.place_randnormal(f_sam, f, f_std, 0., 1.)
+        _b = np.argmin(_ftdiym)
