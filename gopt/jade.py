@@ -86,7 +86,18 @@ def apply(population_size: int, individual_size: int, bounds: np.ndarray,
 
     np.random.seed(seed)
 
-    #For later, a
+    #The original algorithm recommends p_best uniform jitter between .05 and .2.
+    #Implemented using the updated cauchy dist version + 3x rejection resampling before force bounding between f_bds,
+    #instead of the original 2/3rds normal + 1/3rd uniform, see implementation research notebook for density estimates of
+    #both distributions.
+    #Actually cauchy seems to originate from SHADE, but leaving it as it seems to perform better in that context.
+    #CR is norm sampled and no resampling at bounds rejection. If CR is near 0 or 1 there's usually a good reason for it.
+    #genc parameters discount the current generation memory rate (1.-c) by itself (1-c)*(1-c)=v so that if there was
+    #no improvement for multiple generations, it will become more sensitive to any new successes, until more
+    #successes begin to occur again and it goes back to (1.-c)=v. Original implementation shows that jade is
+    #roughly as successful when (1-c) as anywhere from .9 to .5, so genc could potentially make the solution quality
+    #and convergence rate more robust by modulating memory sensitivity.
+    #set f lower bound a little > 0 given the slightly different cauchy sampler.
 
     # 1. Init population
     population = gopt.commons.init_population(population_size, individual_size, bounds)
@@ -124,12 +135,14 @@ def apply(population_size: int, individual_size: int, bounds: np.ndarray,
 def _ini_non_compiled_settings():pass
 
 @register_jitable(**cfg.jit_s)
-def init_algo_stack(population:A, yes=True):
+def init_algo_stack(population:A, yes=True,p_archive=None):
     nt=nb.get_num_threads()
     m_pop=np.empty(population.shape,dtype=np.float64)
-    _crr, _t_pop = init_parameter_stack(nt, population.shape[1], yes)
-    _idx,_ftdiym,_f_sam,_cr_sam=init_population_stack(nt, population.shape[0])
-    return m_pop,_idx[:-1],_crr,_t_pop,_ftdiym,_f_sam,_cr_sam #_idx[-1],_f_sam,_cr_sam
+    ps,pd=population.shape[0],population.shape[1]
+    _crr, _t_pop = init_parameter_stack(nt, pd, yes)
+    _idx,_ftdiym,_f_sam,_cr_sam=init_population_stack(nt, ps)
+    _a = np.empty((ps if p_archive == -1 else p_archive, pd), dtype=np.float64) if p_archive is not None else None
+    return m_pop,_idx,_crr,_t_pop,_ftdiym,_a,_f_sam,_cr_sam #_idx[-1],_f_sam,_cr_sam
 
 
 @register_jitable(**cfg.jit_s)
@@ -141,7 +154,7 @@ def init_parameter_stack(nt, pop_dim, yes=True):
 
 @register_jitable(**cfg.jit_s)
 def init_population_stack(nt, pop_size):
-    _idx = np.empty((nt + 1, pop_size), dtype=np.int64)
+    _idx = np.empty((nt, pop_size), dtype=np.int64)
     _idx[:-1] = np.arange(0, pop_size)
     _ftdiym = np.empty((pop_size,), dtype=np.float64)
     _f_sam = np.empty((pop_size,), dtype=np.float64)
@@ -167,9 +180,9 @@ def run_jade(mutation_selector:int,population: A,
                             stop_apply: Callable,
                             pop_eval: Callable,
                             monitor:Callable,
-                            _m_pop:A,_idx:A,_crr:A,_t_pop:A,_ftdiym:A, _f_sam:A, _cr_sam:A,
+                            _m_pop:A,_idx:A,_crr:A,_t_pop:A,_ftdiym:A, _a:A, _f_sam:A, _cr_sam:A,
                             *eval_opts) -> tuple[A,A]:
-    return run_jade_nocompile(mutation_selector,population,bounds,reject_mx,max_evals,f_init,f_bds,f_scl, f_c,f_genc,cr_init, cr_bds, cr_scl, cr_c,cr_genc,p,leh_order,cross_apply,stop_apply,pop_eval,monitor,_m_pop,_idx,_crr,_t_pop,_ftdiym, _idxs,*eval_opts)
+    return run_jade_nocompile(mutation_selector,population,bounds,reject_mx,max_evals,f_init,f_bds,f_scl, f_c,f_genc,cr_init, cr_bds, cr_scl, cr_c,cr_genc,p,leh_order,cross_apply,stop_apply,pop_eval,monitor,_m_pop,_idx,_crr,_t_pop,_ftdiym,_a,_f_sam,_cr_sam,*eval_opts)
 
 
 @register_jitable(**cfg.jit_s)
@@ -185,11 +198,16 @@ def run_jade_nocompile(mutation_selector:int,population: A,
                             stop_apply: Callable,
                             pop_eval: Callable,
                             monitor:Callable,
-                            _m_pop:A,_idx:A,_crr:A,_t_pop:A,_ftdiym:A,  _f_sam:A, _cr_sam:A,
+                            _m_pop:A,_idx:A,_crr:A,_t_pop:A,_ftdiym:A,_a:A, _f_sam:A, _cr_sam:A,
                             *eval_opts) -> tuple[A,A]:
-    #maybe pbest and pbesta2 later.
+    f_c=1.-f_c #flipping to ~c for classic ema.
+    f_c = 1. - f_c
     max_iters = m.ceil(max_evals / population.shape[0])
-    _jade_c_t_pbest(population,bounds,reject_mx,max_iters,f_init,f_bds,f_scl, f_c,f_genc,cr_init, cr_bds, cr_scl, cr_c,cr_genc,p,leh_order,cross_apply,stop_apply,pop_eval,monitor,_m_pop,_idx,_crr,_t_pop,_ftdiym, _idxs,*eval_opts)
+    match (mutation_selector):
+        case cfg._M_CUR_T_PBEST:
+            _jade_c_t_pbest(population,bounds,reject_mx,max_iters,f_init,f_bds,f_scl, f_c,f_genc,cr_init, cr_bds, cr_scl, cr_c,cr_genc,p,leh_order,cross_apply,stop_apply,pop_eval,monitor,_m_pop,_idx,_crr,_t_pop,_ftdiym,_f_sam,_cr_sam,*eval_opts)
+        case cfg._M_CUR_T_PBESTA:
+            _jade_c_t_pbesta(population,bounds,reject_mx,max_iters,f_init,f_bds,f_scl, f_c,f_genc,cr_init, cr_bds, cr_scl, cr_c,cr_genc,p,leh_order,cross_apply,stop_apply,pop_eval,monitor,_m_pop,_idx,_crr,_t_pop,_ftdiym, _a,_f_sam,_cr_sam,*eval_opts)
     _b = np.argmin(_ftdiym)
     return population[_b], _ftdiym[_b]
 
@@ -207,7 +225,7 @@ def _jade_c_t_pbest(population: A,
                             stop_apply: Callable,
                             pop_eval: Callable,
                             monitor:Callable,
-                            _m_pop:A,_idx:A,_crr:A,_t_pop:A,_ftdiym:A,  _f_sam:A, _cr_sam:A,
+                            _m_pop:A,_idx:A,_crr:A,_t_pop:A,_ftdiym:A, _f_sam:A, _cr_sam:A,
                             *eval_opts):
 
     #Think about making c decay quicker and randomization std larger based on frequency of new bests relative to total evals.
@@ -222,6 +240,30 @@ def _jade_c_t_pbest(population: A,
         if stop_apply is not None and stop_apply(population,_ftdiym):break
 
 @register_jitable(**cfg.jit_s)
+def _jade_c_t_pbesta(population: A,
+                            bounds: A,
+                      reject_mx:int,
+                            max_iters:int,
+                            f_init: float,f_bds: A,f_scl:float, f_c:float, f_genc:NT|float,
+                            cr_init: float, cr_bds: A, cr_scl:float, cr_c:float, cr_genc:NT|float,
+                            p:int|np.ndarray, #maybe extend to p adaption later.
+                            leh_order:float, #lehmer mean order default 2 for contraharmonic. biases higher, which is good..
+                            cross_apply: Callable,
+                            stop_apply: Callable,
+                            pop_eval: Callable,
+                            monitor:Callable,
+                            _m_pop:A,_idx:A,_crr:A,_t_pop:A,_ftdiym:A, _a:A, _f_sam:A, _cr_sam:A,
+                            *eval_opts):
+
+    u_f,u_cr,tp,idx=_first(population,_ftdiym,f_init,_f_sam,f_bds,f_scl,cr_init,_cr_sam,cr_bds,cr_scl,p,pop_eval,*eval_opts)
+    a_idx=0
+    for current_generation in range(max_iters):
+        cmn.uchoice_mutator(population, _m_pop, _cr_sam, bounds, reject_mx, cross_apply,
+                            cmn.c_to_pbesta_mutate, cfg._C_T_PBA_M_R,_idx, _crr, _t_pop, idx, tp, _f_sam,_a[:a_idx])
+        u_f,f_genc,u_cr,cr_genc,tp,idx,a_idx=_the_resta(population,_m_pop,_ftdiym,idx,a_idx,_a,u_f,_f_sam,f_bds,f_scl,f_c,f_genc,u_cr,_cr_sam,cr_bds,cr_scl,cr_c,cr_genc,p,leh_order,pop_eval,monitor,*eval_opts)
+        if stop_apply is not None and stop_apply(population,_ftdiym):break
+
+@register_jitable(**cfg.jit_s)
 def _first(population,_ftdiym,f,f_sam,f_bds,f_scl,cr,cr_sam,cr_bds,cr_scl,p,pop_eval,*eval_opts):
     _ftdiym[:] = pop_eval(population, *eval_opts)
     idx = np.argsort(_ftdiym)
@@ -230,6 +272,23 @@ def _first(population,_ftdiym,f,f_sam,f_bds,f_scl,cr,cr_sam,cr_bds,cr_scl,p,pop_
 
 @register_jitable(**cfg.jit_s)
 def _the_rest(population,m_pop,_ftdiym,idx,u_f,f_sam,f_bds,f_scl,f_c,f_genc,u_cr,cr_sam,cr_bds,cr_scl,cr_c,cr_genc,p,leh_order,pop_eval,monitor,*eval_opts):
+    u_f, f_genc, u_cr, cr_genc, bdx,ftdiym =_r1(population,m_pop,_ftdiym,idx,u_f,f_sam,f_c,f_genc,u_cr,cr_sam,cr_c,cr_genc,leh_order,pop_eval,monitor,*eval_opts)
+    cmn.place_popfit(population, m_pop, _ftdiym, ftdiym, bdx)
+    idx = np.argsort(_ftdiym)  # always needs to be done, idx reusage, if improvements are very rare, might be a little more efficient to have a separate idx array
+    p=_mk_paramsamples(population,u_f,f_sam,f_bds,f_scl,u_cr,cr_sam,cr_bds,cr_scl,p)
+    return u_f,f_genc,u_cr,cr_genc,p,idx
+
+@register_jitable(**cfg.jit_s)
+def _the_resta(population,m_pop,_ftdiym,idx,a_idx,_a,u_f,f_sam,f_bds,f_scl,f_c,f_genc,u_cr,cr_sam,cr_bds,cr_scl,cr_c,cr_genc,p,leh_order,pop_eval,monitor,*eval_opts):
+    u_f, f_genc, u_cr, cr_genc, bdx,ftdiym =_r1(population,m_pop,_ftdiym,idx,u_f,f_sam,f_c,f_genc,u_cr,cr_sam,cr_c,cr_genc,leh_order,pop_eval,monitor,*eval_opts)
+    a_idx=cmn.update_poparchive(population,bdx,a_idx,_a)
+    cmn.place_popfit(population, m_pop, _ftdiym, ftdiym, bdx)
+    idx = np.argsort(_ftdiym)  # always needs to be done, idx reusage, if improvements are very rare, might be a little more efficient to have a separate idx array
+    p=_mk_paramsamples(population,u_f,f_sam,f_bds,f_scl,u_cr,cr_sam,cr_bds,cr_scl,p)
+    return u_f,f_genc,u_cr,cr_genc,p,idx,a_idx
+
+@register_jitable(**cfg.jit_s)
+def _r1(population,m_pop,_ftdiym,idx,u_f,f_sam,f_c,f_genc,u_cr,cr_sam,cr_c,cr_genc,leh_order,pop_eval,monitor,*eval_opts):
     ftdiym = pop_eval(m_pop, *eval_opts)
     bdx = cmn.select_better(_ftdiym, ftdiym, idx)
     if bdx.shape[0] != 0:
@@ -239,14 +298,10 @@ def _the_rest(population,m_pop,_ftdiym,idx,u_f,f_sam,f_bds,f_scl,f_c,f_genc,u_cr
         f_genc=disc_orn(f_genc,f_c)
         cr_genc =disc_orn(cr_genc, cr_c)
     cmn._meval(monitor, population, m_pop, _ftdiym, *eval_opts)
-    _ftdiym[bdx] = ftdiym[bdx]
-    population[bdx] = m_pop[bdx]
-    idx = np.argsort(_ftdiym)  # always needs to be done, idx reusage, if improvements are very rare, might be a little more efficient to have a separate idx array
-    p=_mk_paramsamples(population,u_f,f_sam,f_bds,f_scl,u_cr,cr_sam,cr_bds,cr_scl,p)
-    return u_f,f_genc,u_cr,cr_genc,p,idx
+    return u_f, f_genc, u_cr, cr_genc, bdx,ftdiym
 
 
-@register_jitable(**cfg.jit_s)
+@nb.njit(**cfg.jit_s)
 def _mk_paramsamples(population,u_f,f_sam,f_bds,f_scl,u_cr,cr_sam,cr_bds,cr_scl,p):
     tp = cmn._pset(p)
     #The original implementation uses a 2/3rd normal 1/3rd uniform mixture, but the more modern version uses cauchy.
@@ -256,7 +311,7 @@ def _mk_paramsamples(population,u_f,f_sam,f_bds,f_scl,u_cr,cr_sam,cr_bds,cr_scl,
     for i in range(population.shape[0]):  # cauchy and normal
         # original implementation is, cauchy centered at mean, .1 scale, if <0 regenerate if>1 set it to maximum.
         cr_sam[i] = min(cr_bds[0], max(rand.normalvariate(u_cr, cr_scl), cr_bds[1]))
-        for n in range(3):
+        for n in range(8):
             f_sam[i] = u_f + m.tan(m.pi * (rand.random() - 0.5)) * f_scl  # min(fmn + m.tan(m.pi * (rand.random() - 0.5)) *
             if  f_bds[1] > f_sam[i] and f_sam[i] >= f_bds[0]:
                 break
@@ -272,19 +327,19 @@ def _disc_orn(v, c):return lambda v, c: None if isinstance(v, types.NoneType) el
 
 def optgen_ema(v, c, em_r, n_r):
     if v is None:
-        return (1. - c) * em_r + c * n_r, None
+        return c * em_r + (1. - c) * n_r, None
     else:
-        em_r = (1. - v) * em_r + v * n_r
+        em_r = v * em_r + (1. - v) * n_r
         return em_r, c
 
 @overload(optgen_ema, **cfg.jit_s)
 def _optgen_ema(v, c, em_r, n_r):
     if isinstance(v, types.NoneType):
         def cl(v, c, em_r, n_r):
-            return (1. - c) * em_r + c * n_r, None
+            return c * em_r + (1. - c) * n_r, None
     else:
         def cl(v, c, em_r, n_r):
-            em_r = (1. - v) * em_r + v * n_r
+            em_r = v * em_r + (1. - v) * n_r
             return em_r, c
     return cl
 

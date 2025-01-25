@@ -53,11 +53,8 @@ def _fset_(f):
 def _pset(p):return rand.randrange(p[0], p[1]) if type(p) is np.ndarray else p
 @overload(_pset,**cfg.jit_s)
 def _pset_(p):
-    if isinstance(p,types.Array):
-        def _p(p): return rand.randrange(p[0], p[1]) #jitter p for pbest selection by per generation.
-    else:
-        def _p(p): return p
-    return _p
+    return lambda p: rand.randrange(p[0], p[1]) if isinstance(p,types.Array) else lambda p:p #jitter p for pbest selection by per generation.
+
 
 def _meval(m,*args):
     if m is not None:m(*args)
@@ -184,9 +181,13 @@ def _scaled_bc_(n,pv,scale):
         def _impl(n,pv, scale):return pv*scale[n]
     return _impl
 
-@register_jitable(**cfg.jit_s)
-def ri64(rd:nb.float64):
-    return nb.int64(rd+.5)
+
+def ri64(rd:float): return int(rd + .5)
+ri32=ri64
+
+overload(ri64, **cfg.jit_s)(lambda rd: (lambda rd : nb.int64(rd + .5)))
+overload(ri32, **cfg.jit_s)(lambda rd: (lambda rd : nb.int32(rd + nb.float32(.5))))
+
 
 @nb.njit(**cfg.jit_s)
 def lnorm_bounds_cost(population: np.ndarray,
@@ -296,6 +297,37 @@ def place_randnormal_fbds(vec,mean,std,minn,maxx):
     for i in range(vec.shape[0]):
         vec[i] = min(max(rand.normalvariate(mean, std),minn),maxx)
 
+
+@nb.njit(**cfg.jit_s)
+def update_poparchive(population,bdx,a_idx,archive):
+    lfl=a_idx + bdx.shape[0]
+    n_idx=min(lfl, archive.shape[0])
+    #when a_idx=n_idx (mem is full) it's the same as ski[[ing
+    for i in range(a_idx, n_idx):
+        archive[i]=population[bdx[i-a_idx]]
+    #in case archive is smaller than pop size, we add the min in case len(bdx)> len(archive),
+    #this could introduce a little bias towards whichever pop individuals land last in bdx, but should be neglible.
+    #A solution is just to make the archive >= pop size.
+    ml=min(lfl-n_idx,archive.shape[0]) #+1 #remainder that couldn't be appended, and needs random replacement. Is len(bdx) if a_idx is already _a.shape[0]
+    #if ml>0:
+    for i in range(bdx.shape[0]-ml,bdx.shape[0]):
+        archive[rand.randrange(0,archive.shape[0])]=population[bdx[i]]
+    return n_idx
+
+#example of overloads that take advantage of the fastest implementation for numba compilation and normal python.
+#Later double check that the other register_jitables and overloads are implemented in the same way.
+def place_popfit(pop,m_pop,fit,m_fit,bdx):
+    pop[bdx] = m_pop[bdx]
+    fit[bdx] = m_fit[bdx]
+
+@overload(place_popfit,**cfg.jit_s)
+def _place_fitpop(pop,m_pop,fit,m_fit,bdx):
+    def _pp(pop,m_pop,fit,m_fit,bdx):
+        for i in range(bdx.shape[0]):
+            idd = bdx[i]
+            pop[idd] = m_pop[idd]
+            fit[idd] = m_fit[idd]
+    return _pp
 
 def init_soboluniform(population_size, individual_size, bounds)-> np.ndarray:
     sob_engine=Sobol(individual_size)

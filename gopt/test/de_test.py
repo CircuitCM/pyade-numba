@@ -3,7 +3,7 @@ import numpy as np
 import gopt.de
 import gopt.jade
 import gopt.sade
-import gopt.shade
+import gopt.shade_ext
 import gopt.lshade
 import gopt.ilshade
 import gopt.jso
@@ -75,7 +75,7 @@ def my_callback(**kwargs):
 def test_algorithms():
     global output
 
-    algorithms = [gopt.de, gopt.sade, gopt.jade, gopt.shade, gopt.lshade, gopt.lshadecnepsin, gopt.ilshade,
+    algorithms = [gopt.de, gopt.sade, gopt.jade, gopt.shade_ext, gopt.lshade, gopt.lshadecnepsin, gopt.ilshade,
                   gopt.jso, gopt.mpede]
 
     for algorithm in algorithms:

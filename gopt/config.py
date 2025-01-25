@@ -111,6 +111,9 @@ class CallStrategy:
     OBJ_JIT=2 #Same as OBJ but briefly runs it first for two generations to trigger a compilation, if your fitness function takes forever to evaluate then use previous mode.
     RAW=3 #For advanced users to construct their own jitted routines. The raw implementations and args
 
+#Check out ParamILS
+#https://arxiv.org/pdf/1401.3492
+#https://www.cs.ubc.ca/labs/algorithms/Projects/ParamILS/
 
 #DEPRICATED, experiment with later.
 #Sub policies for best-of-n resampling, performed before fitness function eval. As it's a randomized rejection sampling method it can be used
@@ -171,9 +174,9 @@ class SamplerRejectionPolicy: #well rip.
 #Implementation Schedule:
 #Jade implementation d, setup n
 #Sade implementation d, setup n
-#Shade implementation n, setup n
-#LShade implementation n, setup n
-#ILShade implementation n, setup n
+#Shade implementation d, setup n
+#LShade implementation d, setup n
+#ILShade implementation d, setup n
 #lshadecnepsin implementation n, setup n
 #mpede - maybe
 #jso -maybe
@@ -185,8 +188,10 @@ class SamplerRejectionPolicy: #well rip.
 #CR can also be seperable actually, it might be a decent idea, letting certain dimensions adapt first, however could introduce sign bias.
 #CR technically doesn't need hard limits either, as long as 1 sample is forced.
 #CoDE
+#DEsPA maybe, improved jade with resizing population space and success based parameter adaptation.
+#SPS-L-SHADE-EIG eigen vector based crossover (hmm), successful parent selection framework #1 rank in cec2015
 #current-to-pbest2,
-#current-to-pbesta,
+#current-to-pbesta, #Done
 #current-to-pbest2a, a is archive, 2 includes either another best difference or random diff.
 
 #anti-dim collapse: argmin/sample-min population's std(x bound-scaled)/absdev(x bound-scaled)-0.7071067812, such that the cost will vary between (0,~.292]

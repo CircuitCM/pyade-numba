@@ -12,7 +12,9 @@ from numba.core.extending import overload,register_jitable
 from math import ceil
 
 _PB_IMP=(MutationSelector.CUR_T_PBEST,)
-_MUT_IMP=(MutationSelector.CUR_T_PBEST,MutationSelector.BINARY)
+_MUT_IMP=(MutationSelector.CUR_T_PBEST,MutationSelector.BINARY,MutationSelector.CUR_T_PBESTA)
+_AB_IMP=(MutationSelector.CUR_T_PBESTA,)
+#Rename Binary to rand/rand1
 
 
 def apply_de(pop_eval: Callable,
@@ -27,6 +29,7 @@ def apply_de(pop_eval: Callable,
              #enf_bounds: bool = False, #Recommended to keep it False, and truncate parameters to boundaries in your pop_eval. depricated, do it yourself in eval space, not search space.
              reject_sample_max:int= None,  #Must be >1 or None, If None then no rejection_sampling. Can reduce boundary bias, and increase meaningful search in valid boundaries for same # population evals.  ~5 is a good balance when optimal fitness is along boundaries.
              p_best:float|np.ndarray|None=.11,  #Only used if a probability wgt'd mutator is used. jitters between (0,.9] if None.
+             archive_size:int=-1, #only if an archive mutation strategy is selected. -1 or None defaults to pop_size
              seed:int=None,  #42_420_69_9001 fyi seed pretty much doesn't work with multithreading, even though numba should be supporting it.
              stop_condition:Callable|float|None=None,
              monitor_func:Callable|None=None,
@@ -77,8 +80,9 @@ def apply_de(pop_eval: Callable,
     pp, f, cr, p_best = _ini_non_compiled_settings(f,cr,init_spec,pop_dim,bounds,mutation_type,p_best)
     #if type(pop_dim) != np.ndarray:
     pop_dim=np.array(pp.shape,dtype=np.int64) # be safe
-
-    stack_mem=init_algo_stack(pp, False if bounds is None or reject_sample_max is None else True)
+    bds_reject=False if bounds is None or reject_sample_max is None else True
+    arch=None if mutation_type not in _AB_IMP else archive_size
+    stack_mem=init_algo_stack(pp, bds_reject,arch)
     crf=cmn.bin_cross_init if cross_type == CrossoverSelector.BIN else None #implement later if needed
     stop_apply= cmn.mk_fitness_thresh_stop(stop_condition) if type(stop_condition) is float else stop_condition #leaving none or callable.
     if mutation_type in _MUT_IMP:
@@ -122,14 +126,15 @@ def apply_de(pop_eval: Callable,
             # User can optimize params using this if they don't care about the jit.
             def run(n_f: float = None, n_cr: float = None, n_init_spec: Callable | str | np.ndarray = None,
                     n_pop_dim: np.ndarray | None = None, n_bounds: A = None, n_max_evals: int = None,
-                    n_reject_sample_max: int = None, n_p_best: float | None = None, seed: int = None):
+                    n_reject_sample_max: int = None, n_p_best: float | None = None, n_archive_size:int=None, seed: int = None):
                 n_f = f if n_f is None else n_f
                 n_cr = cr if n_cr is None else n_cr
                 n_init_spec = init_spec if n_init_spec is None else n_init_spec
                 n_pop_dim = pop_dim if n_pop_dim is None else n_pop_dim
                 n_bounds = bounds if n_bounds is None else n_bounds
                 n_p_best = p_best if n_p_best is None else n_p_best
-                #ignore seed for now
+                n_archive_size =archive_size if n_archive_size is None else n_archive_size
+                #won't set if none, doesn't use n_seed so no resets.
                 set_seed(seed)
                 # print(n_f, n_cr, n_init_spec, n_pop_dim, n_bounds, mutation_type, n_p_best)
                 n_pp = _ini_spc(n_init_spec, n_pop_dim, n_bounds)
@@ -141,7 +146,9 @@ def apply_de(pop_eval: Callable,
                 n_reject_sample_max = reject_sample_max if n_reject_sample_max is None else n_reject_sample_max
                 n_gus = stack_mem
                 if i0 or i1:
-                    n_gus = init_algo_stack(n_pp, False if bounds is None or reject_sample_max is None else True)
+                    n_bds_j=False if n_bounds is None or n_reject_sample_max is None else True
+                    n_arch = None if mutation_type not in _AB_IMP else n_archive_size
+                    n_gus = init_algo_stack(n_pp, n_bds_j,n_arch)
                 #print('number evals',n_max_evals)
                 return _run(mutation_type, n_pp, n_bounds, n_reject_sample_max, n_max_evals, n_f, n_p_best, n_cr,
                              crf, stop_apply, pop_eval, monitor_func, *n_gus, *eval_opts)
@@ -158,12 +165,14 @@ def apply_de(pop_eval: Callable,
         return None,None
 
 @register_jitable(**cfg.jit_s)
-def init_algo_stack(population:A, bounds_resample=True,p_archive=True):
+def init_algo_stack(population:A, bounds_resample=True,p_archive=None):
     nt=nb.get_num_threads()
     m_pop=np.empty(population.shape,dtype=np.float64)
-    _crr, _t_pop = init_parameter_stack(nt, population.shape[1], bounds_resample)
-    _idx,_ftdiym=init_population_stack(nt, population.shape[0])
-    return m_pop,_idx[:-1],_crr,_t_pop,_ftdiym,_idx[-1],#_adegen
+    ps,pd=population.shape[0],population.shape[1]
+    _crr, _t_pop = init_parameter_stack(nt, pd, bounds_resample)
+    _idx,_ftdiym=init_population_stack(nt, ps)
+    _a = np.empty((ps if p_archive==-1 else p_archive, pd), dtype=np.float64) if p_archive is not None else None
+    return m_pop,_idx[:-1],_crr,_t_pop,_ftdiym,_idx[-1],_a
 
 
 @register_jitable(**cfg.jit_s)
@@ -263,7 +272,7 @@ def vec_to_settings_cost(search_vec,bounds,f:np.ndarray,cr:np.ndarray,p_b:np.nda
     cstc+=cs
     cs,pb0,pb1=_hw_cost(bounds[4,0],bounds[4,1],bounds[5,0],bounds[5,1],sv[4],sv[5],.1) #p_best jitter range
     cstc += cs
-    pd=min(max(bounds[6,0], sv[6]), bounds[6,1]) #pop_dim
+    pd=min(max(bounds[6,0], sv[6]), bounds[6,1]) #pop_size
     cstc += abs(sv[6]-pd)
     pmi=cmn.ri64(pd)
     #print(pb0,pb1)
@@ -406,7 +415,7 @@ def run_de_nocompile(mutation_selector:int,population: A,
                             stop_apply: Callable,
                             pop_eval: Callable,
                             monitor:Callable,
-                            _m_pop:A,_idx:A,_crr:A,_t_pop:A,_ftdiym:A, _idxs:A,
+                            _m_pop:A,_idx:A,_crr:A,_t_pop:A,_ftdiym:A, _idxs:A,_a:A,
                             *eval_opts):
 
     max_iters=ceil(max_evals/population.shape[0]) #Leaving here as in the future the algorithm may allocate procedures differently based on the
@@ -421,7 +430,7 @@ def run_de_nocompile(mutation_selector:int,population: A,
                            _m_pop, _idx, _crr, _t_pop, _ftdiym, _idxs, *eval_opts)
         case cfg._M_CUR_T_PBESTA:
             _de_c_t_pbesta(population, bounds, reject_mx, max_iters, f, p, cr, cross_apply, stop_apply, pop_eval, monitor,
-                          _m_pop, _idx, _crr, _t_pop, _ftdiym, _idxs, *eval_opts)
+                          _m_pop, _idx, _crr, _t_pop, _ftdiym, _idxs,_a,*eval_opts)
 
     #Old implementation, might remove as it might not return the population's best, especially with stochastic fitness functions.
     #User should gather their desired population and fitness info in their monitor function for assurance.
@@ -478,16 +487,15 @@ def _de_c_t_pbesta(population: A,
                    stop_apply: Callable,
                    pop_eval: Callable,
                    monitor:Callable,
-                   _m_pop:A, _idx:A, _crr:A, _t_pop:A, _ftdiym:A, _idxs:A, _a:A, _arg:A,
+                   _m_pop:A, _idx:A, _crr:A, _t_pop:A, _ftdiym:A, _idxs:A, _a:A,
                    *eval_opts):
     tf,tcr=_first(population,_ftdiym,f,cr,pop_eval,*eval_opts)
     _b = np.argsort(_ftdiym) #this will spam new arrays, boohoo
     a_idx=0
-    aq=_a.shape[0]
     for current_generation in range(max_iters):
         tp=_pset(p)
         cmn.uchoice_mutator(population, _m_pop, tcr, bounds, reject_mx, cross_apply, cmn.c_to_pbest_mutate, cfg._C_T_PB_M_R, _idx, _crr, _t_pop, _b, tp, tf,_a[:a_idx])
-        tf,tcr,bdx=_the_rest(population,_m_pop,_ftdiym,_idxs,f,cr,pop_eval,monitor,*eval_opts)
+        tf,tcr,a_idx=_the_resta(population,_m_pop,_ftdiym,_idxs,a_idx,_a,f,cr,pop_eval,monitor,*eval_opts)
         if stop_apply is not None and stop_apply(population,_ftdiym):break
         _b = np.argsort(_ftdiym)
 
@@ -508,58 +516,17 @@ def _the_rest(population,m_pop,_ftdiym,_idxs,f,cr,pop_eval,monitor,*eval_opts):
     _meval(monitor,population,m_pop,_ftdiym,*eval_opts)
     #print(_ftdiym, ftdiym, _idxs)
     bdx = cmn.select_better(_ftdiym, ftdiym, _idxs)
-    place_popfit(population, m_pop, _ftdiym, ftdiym, bdx)
+    cmn.place_popfit(population, m_pop, _ftdiym, ftdiym, bdx)
     return _fset(f),_fset(cr)
 
 @register_jitable(**cfg.jit_s)
-def _the_resta(population,m_pop,_ftdiym,_idxs,_a,_arg,f,cr,a_idx,pop_eval,monitor,*eval_opts):
+def _the_resta(population,m_pop,_ftdiym,_idxs,a_idx,_a,f,cr,pop_eval,monitor,*eval_opts):
     ftdiym = pop_eval(m_pop, *eval_opts)
-    #To capture the most information, monitor comes after new pop transition. But sometimes it should be in the eval function.
     _meval(monitor,population,m_pop,_ftdiym,*eval_opts)
-    #print(_ftdiym, ftdiym, _idxs)
     bdx = cmn.select_better(_ftdiym, ftdiym, _idxs)
-    i=0
-    lfl=a_idx + bdx.shape[0]
-    if a_idx < _a.shape[0] - 1: #is there memory left
-        for i in range(a_idx, min(lfl, _a.shape[0])):
-            _a[i]=population[bdx[i-a_idx]]
-        a_idx=i
-    ml=lfl-a_idx #+1 #remainder that couldn't be appended, and needs random replacement. Is len(bdx) if a_idx is already _a.shape[0]
-    if ml>0:
-        cmn.durstenfeld_p_shuffle(_arg,ml) #as long as _arg was inited with arange, no resets are needed.
-        sti=bdx.shape[0]-ml-1
-        for i in range(0,ml):
-            _a[_arg[i]]=population[sti+i]
-    place_popfit(population, m_pop, _ftdiym, ftdiym, bdx)
+    a_idx=cmn.update_poparchive(population,bdx,a_idx,_a)
+    cmn.place_popfit(population, m_pop, _ftdiym, ftdiym, bdx)
     return _fset(f),_fset(cr),a_idx
-
-def place_popfit(pop,m_pop,fit,m_fit,bdx):
-    pop[bdx] = m_pop[bdx]
-    fit[bdx] = m_fit[bdx]
-
-@overload(place_popfit,**cfg.jit_s)
-def _place_fitpop(pop,m_pop,fit,m_fit,bdx):
-    def _pp(pop,m_pop,fit,m_fit,bdx):
-        for i in range(bdx.shape[0]):
-            idd = bdx[i]
-            pop[idd] = m_pop[idd]
-            fit[idd] = m_fit[idd]
-    return _pp
-
-@nb.njit(**cfg.jit_s)
-def update_poparchive(population,bdx,a_idx,archive,arg):
-    lfl=a_idx + bdx.shape[0]
-    n_idx=min(lfl, archive.shape[0])
-    for i in range(a_idx, n_idx):
-        archive[i]=population[bdx[i-a_idx]]
-    a_idx=n_idx
-    ml=lfl-a_idx #+1 #remainder that couldn't be appended, and needs random replacement. Is len(bdx) if a_idx is already _a.shape[0]
-    if ml>0:
-        cmn.durstenfeld_p_shuffle(arg,ml) #as long as arg was inited with arange, no resets are needed.
-        sti=bdx.shape[0]-ml-1
-        for i in range(0,ml):
-            archive[arg[i]]=population[sti+i]
-        
         
 
 def _ftpop(op,tp,i):return tp if tp is None else tp[i,:op].reshape((1,op)) if type(i) is int else tp[:,:op]
@@ -584,7 +551,7 @@ def set_seed(seed):
         _ss(seed)
         rand.seed(seed)
         np.random.seed(seed)
-@overload(set_seed,**cfg.jit_s,inline='always')
+@overload(set_seed,**cfg.jit_s)
 def _rset_(f):
     if isinstance(f,types.NoneType):
         def _f(f): pass
@@ -594,7 +561,7 @@ def _rset_(f):
 
 #can be used for CR too
 def _fset(f):return rand.uniform(f[0], f[1]) if type(f) is np.ndarray else f
-@overload(_fset,**cfg.jit_s,inline='always')
+@overload(_fset,**cfg.jit_s)
 def _fset_(f):
     if isinstance(f,types.Array):
         def _f(f): return rand.uniform(f[0], f[1])
